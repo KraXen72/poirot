@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **Type**: VS Code Extension
 - **Language**: TypeScript (compiled to JavaScript, Node.js CommonJS)
-- **Main Entry**: `./out/extension.js` (compiled from `src/extension.ts`)
+- **Main Entry**: `./out/src/extension.js` (compiled from `src/extension.ts`)
 - **Version**: 0.5.2
 
 ## Architecture Overview

@@ -143,6 +143,9 @@ export class ExtensionActivator {
     // Register translation label click command
     this.registerTranslationLabelClickCommand();
 
+    // Register right-click inspect translation command
+    this.registerInspectTranslationAtCursorCommand();
+
     // Register CodeLens provider
     this.registerCodeLensProvider();
 
@@ -363,6 +366,48 @@ export class ExtensionActivator {
     );
 
     this.disposables.push(clickLabelCommand);
+  }
+
+  /**
+   * Register right-click inspect translation command
+   */
+  private registerInspectTranslationAtCursorCommand(): void {
+    const inspectTranslationCommand = vscode.commands.registerCommand(
+      'poirot.inspectTranslationAtCursor',
+      async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+          vscode.window.showErrorMessage('No active text editor');
+          return;
+        }
+
+        if (!this.editorService.isSupportedDocument(editor.document)) {
+          vscode.window.showErrorMessage(
+            'Translation inspection is only supported in JavaScript, TypeScript, and Svelte files'
+          );
+          return;
+        }
+
+        const translationCall = this.editorService.findTranslationCallAtSelection(
+          editor.document,
+          editor.selection
+        );
+        if (!translationCall) {
+          vscode.window.showInformationMessage(
+            'No translation call found at cursor. Place your cursor on an m.*() call and try again.'
+          );
+          return;
+        }
+
+        await vscode.commands.executeCommand(
+          'poirot.clickTranslationLabel',
+          translationCall.methodName,
+          editor.document.uri.fsPath
+        );
+      }
+    );
+
+    this.disposables.push(inspectTranslationCommand);
   }
 
   /**
@@ -593,6 +638,14 @@ export class ExtensionActivator {
         if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
           await this.translationKeysProvider.refresh(activeEditor.document);
         }
+      }
+
+      if (event.affectsConfiguration('poirot.translationCodeLens')) {
+        const enabled = vscode.workspace
+          .getConfiguration('poirot')
+          .get<boolean>('translationCodeLens', true);
+        console.log(`🔍 Translation CodeLens ${enabled ? 'enabled' : 'disabled'}`);
+        this.editorService.getCodeLensProvider().refresh();
       }
 
       if (event.affectsConfiguration('poirot.realtimeUpdates')) {

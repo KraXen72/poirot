@@ -32,7 +32,23 @@ export class TranslationCodeLensProvider implements vscode.CodeLensProvider {
   ): void {
     this.document = document;
     this.translationResults = translationResults || [];
+    this.refresh();
+  }
+
+  /**
+   * Refresh CodeLens rendering
+   */
+  refresh(): void {
     this._onDidChangeCodeLenses.fire();
+  }
+
+  /**
+   * Check if translation CodeLens is enabled in settings
+   * @returns True if enabled
+   */
+  private isTranslationCodeLensEnabled(): boolean {
+    const config = vscode.workspace.getConfiguration('poirot');
+    return config.get<boolean>('translationCodeLens', true);
   }
 
   /**
@@ -41,6 +57,10 @@ export class TranslationCodeLensProvider implements vscode.CodeLensProvider {
    * @returns Array of CodeLens items
    */
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    if (!this.isTranslationCodeLensEnabled()) {
+      return [];
+    }
+
     if (!this.document || document.uri.toString() !== this.document.uri.toString()) {
       return [];
     }

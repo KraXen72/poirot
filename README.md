@@ -16,6 +16,7 @@ A VS Code extension that displays inline translation values for i18n method call
 - **Multi-language Support**: Works with multiple locales and configurable locale switching
 - **inlang Project Support**: Automatically detects and uses inlang project configuration
 - **Flexible Configuration**: Command palette integration for easy locale switching and performance tuning
+- **Inspect Navigation Options**: Use the "Inspect Translation" CodeLens or right-click on a translation call to jump to its message entry
 
 ## Motivation & Disclaimer
 
@@ -76,7 +77,8 @@ Configure the default locale in your VS Code settings:
 {
   "poirot.defaultLocale": "es",
   "poirot.realtimeUpdates": true,
-  "poirot.updateDelay": 300
+  "poirot.updateDelay": 300,
+  "poirot.translationCodeLens": true
 }
 ```
 
@@ -84,6 +86,11 @@ Configure the default locale in your VS Code settings:
 - `poirot.defaultLocale`: Default locale for displaying translation labels
 - `poirot.realtimeUpdates`: Enable/disable real-time updates while typing (default: true)
 - `poirot.updateDelay`: Delay in milliseconds before updating labels after typing stops (100-2000ms, default: 300ms)
+- `poirot.translationCodeLens`: Show/hide the `Inspect Translation` CodeLens above translation calls (default: true)
+
+### Inspect Translation Without CodeLens
+
+You can right-click directly on `m.some_key()` (including bracket syntax like `m["some.key"]()`) and choose **Inspect Translation** to jump to the same location as the CodeLens action.
 
 ### Locale Priority Order
 

@@ -125,6 +125,48 @@ export class EditorService {
   }
 
   /**
+   * Find translation call at current cursor position or selection
+   * @param document The active document
+   * @param selection The current selection
+   * @returns Translation call metadata or null if no call is found
+   */
+  findTranslationCallAtSelection(
+    document: vscode.TextDocument,
+    selection: vscode.Selection
+  ): { methodName: string; start: number; end: number } | null {
+    const translationCalls = this.translationService.findTranslationCalls(document.getText());
+
+    if (selection.isEmpty) {
+      const cursorOffset = document.offsetAt(selection.active);
+      const directMatch = translationCalls.find(
+        (call) => cursorOffset >= call.start && cursorOffset < call.end
+      );
+      if (directMatch) {
+        return directMatch;
+      }
+
+      if (cursorOffset > 0) {
+        return (
+          translationCalls.find(
+            (call) => cursorOffset - 1 >= call.start && cursorOffset - 1 < call.end
+          ) || null
+        );
+      }
+
+      return null;
+    }
+
+    const selectionStart = document.offsetAt(selection.start);
+    const selectionEnd = document.offsetAt(selection.end);
+
+    return (
+      translationCalls.find(
+        (call) => selectionStart < call.end && selectionEnd > call.start
+      ) || null
+    );
+  }
+
+  /**
    * Dispose of the service resources
    */
   dispose(): void {
