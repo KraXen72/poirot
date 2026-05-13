@@ -1,15 +1,28 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
 import { humanId } from 'human-id';
 import { LocaleService } from '../locale/service';
 import { TranslationRepository } from '../translation/repository';
-import { ProjectService } from '../project/service';
 import { formatTranslationCall, setNestedValue } from '../translation/key-utils';
 
 type InterpolationChoice = {
   label: string;
   value: 'template' | 'code';
+};
+
+type ExtractionSnapshot = {
+  uri: vscode.Uri;
+  selection: vscode.Range;
+  version: number;
+  languageId: string;
+  workspacePath: string;
+};
+
+type LocaleFileEdit = {
+  uri: vscode.Uri;
+  range: vscode.Range;
+  content: string;
+  shouldCreate: boolean;
 };
 
 /**
@@ -18,12 +31,10 @@ type InterpolationChoice = {
 export class ExtractionService {
   private localeService: LocaleService;
   private translationRepository: TranslationRepository;
-  private projectService: ProjectService;
 
   constructor() {
     this.localeService = new LocaleService();
     this.translationRepository = new TranslationRepository();
-    this.projectService = new ProjectService();
   }
 
   /**
@@ -63,7 +74,8 @@ export class ExtractionService {
         return false;
       }
 
-      const rawSelectedText = editor.document.getText(editor.selection).trim();
+      const selection = new vscode.Range(editor.selection.start, editor.selection.end);
+      const rawSelectedText = editor.document.getText(selection).trim();
       if (!rawSelectedText) {
         vscode.window.showErrorMessage('Selected text is empty');
         return false;
@@ -79,40 +91,65 @@ export class ExtractionService {
       }
 
       const workspacePath = workspaceFolder.uri.fsPath;
+      const snapshot: ExtractionSnapshot = {
+        uri: editor.document.uri,
+        selection,
+        version: editor.document.version,
+        languageId: editor.document.languageId,
+        workspacePath,
+      };
+      const baseTranslations = await this.loadBaseLocaleTranslations(workspacePath);
 
       // Check if the exact text already exists in translations (using cleaned text)
-      const existingKey = await this.findExistingTranslation(workspacePath, selectedText);
+      const existingKey = this.searchInTranslations(baseTranslations, selectedText);
       if (existingKey) {
-        // Auto-interpolate with existing key without asking
-        return await this.replaceTextWithKey(editor, existingKey);
+        const interpolationType = await this.getUserInterpolationChoice(
+          snapshot.languageId,
+          existingKey
+        );
+        if (!interpolationType) {
+          return false;
+        }
+
+        const workspaceEdit = new vscode.WorkspaceEdit();
+        workspaceEdit.replace(
+          snapshot.uri,
+          snapshot.selection,
+          formatTranslationCall(existingKey, interpolationType)
+        );
+
+        return await this.applySnapshotWorkspaceEdit(snapshot, workspaceEdit);
       }
 
       // Generate new key
-      const newKey = await this.generateUniqueKey(workspacePath);
-      if (!newKey) {
-        vscode.window.showErrorMessage('Failed to generate unique key');
-        return false;
-      }
+      const newKey = this.generateUniqueKeyFromTranslations(baseTranslations);
 
       // Get interpolation choice from user (showing the real key name)
-      const interpolationType = await this.getUserInterpolationChoice(
-        editor.document.languageId,
-        newKey
-      );
+      const interpolationType = await this.getUserInterpolationChoice(snapshot.languageId, newKey);
       if (!interpolationType) {
         return false; // User cancelled
       }
 
-      // Add to locale files (using cleaned text)
-      const success = await this.addToLocaleFiles(workspacePath, newKey, selectedText);
-      if (!success) {
-        vscode.window.showErrorMessage('Failed to update locale files');
-        return false;
+      const localeFileEdits = await this.prepareLocaleFileEdits(
+        workspacePath,
+        newKey,
+        selectedText
+      );
+      const workspaceEdit = new vscode.WorkspaceEdit();
+
+      workspaceEdit.replace(
+        snapshot.uri,
+        snapshot.selection,
+        formatTranslationCall(newKey, interpolationType)
+      );
+      for (const fileEdit of localeFileEdits) {
+        if (fileEdit.shouldCreate) {
+          workspaceEdit.createFile(fileEdit.uri, { ignoreIfExists: true });
+        }
+        workspaceEdit.replace(fileEdit.uri, fileEdit.range, fileEdit.content);
       }
 
-      // Replace selected text with key call
-      const keyCall = formatTranslationCall(newKey, interpolationType);
-      return await this.replaceSelectedText(editor, keyCall);
+      return await this.applySnapshotWorkspaceEdit(snapshot, workspaceEdit);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error('Error during text extraction:', error);
@@ -121,38 +158,23 @@ export class ExtractionService {
     }
   }
 
-  /**
-   * Find if the exact text already exists in any translation (supports nested keys)
-   * @param workspacePath The workspace root path
-   * @param text The text to search for
-   * @returns The existing key or null if not found
-   */
-  async findExistingTranslation(workspacePath: string, text: string): Promise<string | null> {
+  private async loadBaseLocaleTranslations(
+    workspacePath: string
+  ): Promise<Record<string, unknown>> {
     try {
       const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
       const baseLocale = inlangSettings?.baseLocale || 'en';
 
-      // Check in base locale first
       const baseTranslationPath = this.localeService.resolveTranslationPath(
         workspacePath,
         baseLocale
       );
-      const baseTranslations = await this.translationRepository.loadTranslations(
-        baseTranslationPath,
-        baseLocale
+      return (
+        (await this.translationRepository.loadTranslations(baseTranslationPath, baseLocale)) || {}
       );
-
-      if (baseTranslations) {
-        const foundKey = this.searchInTranslations(baseTranslations, text);
-        if (foundKey) {
-          return foundKey;
-        }
-      }
-
-      return null;
     } catch (error) {
-      console.error('Error finding existing translation:', error);
-      return null;
+      console.error('Error loading base locale translations:', error);
+      return {};
     }
   }
 
@@ -188,48 +210,29 @@ export class ExtractionService {
     return null;
   }
 
-  /**
-   * Generate a unique human-readable key
-   * @param workspacePath The workspace root path
-   * @returns The generated unique key or null if failed
-   */
-  async generateUniqueKey(workspacePath: string): Promise<string | null> {
-    try {
-      const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
-      const baseLocale = inlangSettings?.baseLocale || 'en';
-      const baseTranslationPath = this.localeService.resolveTranslationPath(
-        workspacePath,
-        baseLocale
-      );
-      const baseTranslations =
-        (await this.translationRepository.loadTranslations(baseTranslationPath, baseLocale)) || {};
-
-      // Try to generate unique key up to 10 times
-      for (let i = 0; i < 10; i++) {
-        const key = humanId({
-          separator: '_',
-          capitalize: false,
-          adjectiveCount: 2,
-          addAdverb: false,
-        });
-
-        if (!baseTranslations[key]) {
-          return key;
-        }
-      }
-
-      // If we couldn't generate a unique key, add a timestamp
+  private generateUniqueKeyFromTranslations(baseTranslations: Record<string, unknown>): string {
+    // Try to generate unique key up to 10 times
+    for (let i = 0; i < 10; i++) {
       const key = humanId({
         separator: '_',
         capitalize: false,
         adjectiveCount: 2,
         addAdverb: false,
       });
-      return `${key}_${Date.now()}`;
-    } catch (error) {
-      console.error('Error generating unique key:', error);
-      return null;
+
+      if (!baseTranslations[key]) {
+        return key;
+      }
     }
+
+    // If we couldn't generate a unique key, add a timestamp
+    const key = humanId({
+      separator: '_',
+      capitalize: false,
+      adjectiveCount: 2,
+      addAdverb: false,
+    });
+    return `${key}_${Date.now()}`;
   }
 
   /**
@@ -266,117 +269,91 @@ export class ExtractionService {
     return selected ? selected.value : null;
   }
 
-  /**
-   * Add the new key-value pair to all locale files
-   * @param workspacePath The workspace root path
-   * @param key The translation key
-   * @param value The translation value
-   * @returns True if successful
-   */
-  async addToLocaleFiles(workspacePath: string, key: string, value: string): Promise<boolean> {
-    try {
-      const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
-      const baseLocale = inlangSettings?.baseLocale || 'en';
-      const locales = new Set(inlangSettings?.locales || []);
-      locales.add(baseLocale);
+  private async prepareLocaleFileEdits(
+    workspacePath: string,
+    key: string,
+    value: string
+  ): Promise<LocaleFileEdit[]> {
+    const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
+    const baseLocale = inlangSettings?.baseLocale || 'en';
+    const locales = new Set(inlangSettings?.locales || []);
+    locales.add(baseLocale);
 
-      if (locales.size === 0) {
-        locales.add('en');
-      }
-
-      await Promise.all(
-        [...locales].map((locale) =>
-          this.updateLocaleFile(workspacePath, locale, key, locale === baseLocale ? value : '')
-        )
-      );
-
-      return true;
-    } catch (error) {
-      console.error('Error adding to locale files:', error);
-      return false;
+    if (locales.size === 0) {
+      locales.add('en');
     }
+
+    return Promise.all(
+      [...locales].map((locale) =>
+        this.prepareLocaleFileEdit(workspacePath, locale, key, locale === baseLocale ? value : '')
+      )
+    );
   }
 
-  /**
-   * Update a specific locale file with new key-value pair (supports nested keys)
-   * @param workspacePath The workspace root path
-   * @param locale The locale to update
-   * @param key The translation key (can be nested like "login.inputs.email")
-   * @param value The translation value
-   */
-  async updateLocaleFile(
+  private async prepareLocaleFileEdit(
     workspacePath: string,
     locale: string,
     key: string,
     value: string
-  ): Promise<void> {
-    try {
-      const translationPath = this.localeService.resolveTranslationPath(workspacePath, locale);
+  ): Promise<LocaleFileEdit> {
+    const translationPath = this.localeService.resolveTranslationPath(workspacePath, locale);
+    const translationUri = vscode.Uri.file(translationPath);
+    const fileExists = this.translationRepository.translationFileExists(translationPath);
 
-      // Load existing translations or create empty object
-      let translations: Record<string, unknown> = {};
-      if (fs.existsSync(translationPath)) {
-        const content = fs.readFileSync(translationPath, 'utf8');
-        translations = JSON.parse(content);
-      } else {
-        // Ensure directory exists
-        const dir = path.dirname(translationPath);
-        if (!fs.existsSync(dir)) {
-          fs.mkdirSync(dir, { recursive: true });
-        }
+    await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(translationPath)));
+
+    let translations: Record<string, unknown> = {};
+    let range: vscode.Range;
+
+    if (fileExists) {
+      const document = await vscode.workspace.openTextDocument(translationUri);
+      try {
+        translations = JSON.parse(document.getText()) as Record<string, unknown>;
+      } catch {
+        throw new Error(
+          `Cannot update locale "${locale}" because its translation file has invalid JSON.`
+        );
       }
 
-      // Set the nested or flat key-value pair
-      setNestedValue(translations, key, value);
-
-      // Write back to file maintaining original key order
-      fs.writeFileSync(translationPath, JSON.stringify(translations, null, 2) + '\n', 'utf8');
-
-      console.log(`✅ Updated ${locale} locale file: ${key} = "${value}"`);
-    } catch (error) {
-      console.error(`Error updating locale file for ${locale}:`, error);
-      throw error;
+      range = new vscode.Range(
+        document.positionAt(0),
+        document.positionAt(document.getText().length)
+      );
+    } else {
+      range = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
     }
+
+    setNestedValue(translations, key, value);
+    return {
+      uri: translationUri,
+      range,
+      content: `${JSON.stringify(translations, null, 2)}\n`,
+      shouldCreate: !fileExists,
+    };
   }
 
-  /**
-   * Replace selected text with the key call
-   * @param editor The text editor
-   * @param replacement The replacement text
-   * @returns True if successful
-   */
-  async replaceSelectedText(editor: vscode.TextEditor, replacement: string): Promise<boolean> {
+  private async applySnapshotWorkspaceEdit(
+    snapshot: ExtractionSnapshot,
+    workspaceEdit: vscode.WorkspaceEdit
+  ): Promise<boolean> {
     try {
-      await editor.edit((editBuilder) => {
-        editBuilder.replace(editor.selection, replacement);
-      });
+      const currentDocument = await vscode.workspace.openTextDocument(snapshot.uri);
+      if (currentDocument.version !== snapshot.version) {
+        vscode.window.showWarningMessage(
+          'Extraction was cancelled because the selection changed before edits were applied.'
+        );
+        return false;
+      }
 
-      // Focus back on the editor
-      await vscode.window.showTextDocument(editor.document, editor.viewColumn);
-
+      const applied = await vscode.workspace.applyEdit(workspaceEdit);
+      if (!applied) {
+        vscode.window.showErrorMessage('Failed to apply extraction edits.');
+        return false;
+      }
       return true;
     } catch (error) {
-      console.error('Error replacing selected text:', error);
+      console.error('Error applying extraction edits:', error);
       return false;
     }
-  }
-
-  /**
-   * Replace text with existing key
-   * @param editor The text editor
-   * @param existingKey The existing translation key
-   * @returns True if successful
-   */
-  async replaceTextWithKey(editor: vscode.TextEditor, existingKey: string): Promise<boolean> {
-    const interpolationType = await this.getUserInterpolationChoice(
-      editor.document.languageId,
-      existingKey
-    );
-    if (!interpolationType) {
-      return false;
-    }
-
-    const keyCall = formatTranslationCall(existingKey, interpolationType);
-    return await this.replaceSelectedText(editor, keyCall);
   }
 }
