@@ -7,6 +7,7 @@ import { SidebarService } from '../sidebar/service';
 import { ProjectSelectorProvider } from '../sidebar/project-provider';
 import { TranslationKeysProvider } from '../sidebar/translation-keys-provider';
 import { ProjectService } from '../project/service';
+import { TranslationRenameProvider } from '../editor/rename-provider';
 
 type DocumentUpdateCallback = () => Promise<void>;
 
@@ -27,6 +28,7 @@ export class ExtensionActivator {
   private documentUpdateTimeouts: Map<string, NodeJS.Timeout>;
   private DEBOUNCE_DELAY: number;
   private translationFileWatchers: vscode.FileSystemWatcher[];
+  private translationRenameProvider: TranslationRenameProvider;
 
   constructor() {
     this.editorService = new EditorService();
@@ -42,6 +44,7 @@ export class ExtensionActivator {
     this.documentUpdateTimeouts = new Map();
     this.DEBOUNCE_DELAY = 300;
     this.translationFileWatchers = [];
+    this.translationRenameProvider = new TranslationRenameProvider();
   }
 
   /**
@@ -149,6 +152,9 @@ export class ExtensionActivator {
     // Register CodeLens provider
     this.registerCodeLensProvider();
 
+    // Register rename provider
+    this.registerRenameProvider();
+
     // Set up event listeners
     this.setupEventListeners();
 
@@ -254,6 +260,8 @@ export class ExtensionActivator {
 
       const success = await this.extractionService.extractSelectedText(editor);
       if (success) {
+        await this.editorService.processDocument(editor.document);
+        await this.translationKeysProvider.refresh(editor.document);
         vscode.window.showInformationMessage('Text extracted successfully to locale files');
       }
     });
@@ -428,6 +436,24 @@ export class ExtensionActivator {
     );
 
     this.disposables.push(codeLensDisposable);
+  }
+
+  /**
+   * Register the translation rename provider
+   */
+  private registerRenameProvider(): void {
+    const renameDisposable = vscode.languages.registerRenameProvider(
+      [
+        { language: 'javascript', scheme: 'file' },
+        { language: 'javascriptreact', scheme: 'file' },
+        { language: 'typescript', scheme: 'file' },
+        { language: 'typescriptreact', scheme: 'file' },
+        { language: 'svelte', scheme: 'file' },
+      ],
+      this.translationRenameProvider
+    );
+
+    this.disposables.push(renameDisposable);
   }
 
   /**

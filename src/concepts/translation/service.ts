@@ -1,12 +1,16 @@
 import { TranslationRepository } from './repository';
 import { LocaleService } from '../locale/service';
 import { ProjectService } from '../project/service';
+import { getNestedValue } from './key-utils';
 
 type TranslationCall = {
   methodName: string;
   params: string;
   start: number;
   end: number;
+  keyStart: number;
+  keyEnd: number;
+  accessorEnd: number;
   keyType: 'flat' | 'nested';
 };
 
@@ -52,22 +56,36 @@ export class TranslationService {
 
     // Find flat key patterns
     while ((match = flatPattern.exec(text)) !== null) {
+      const keyStart = match.index + match[0].indexOf(match[1]);
+      const keyEnd = keyStart + match[1].length;
+      const accessorEnd = match.index + match[0].indexOf('(');
+
       calls.push({
         methodName: match[1],
         params: match[2].trim(),
         start: match.index,
         end: match.index + match[0].length,
+        keyStart,
+        keyEnd,
+        accessorEnd,
         keyType: 'flat',
       });
     }
 
     // Find nested key patterns
     while ((match = nestedPattern.exec(text)) !== null) {
+      const keyStart = match.index + match[0].indexOf(match[2]);
+      const keyEnd = keyStart + match[2].length;
+      const accessorEnd = match.index + match[0].indexOf('(');
+
       calls.push({
         methodName: match[2], // The key inside the quotes
         params: match[3].trim(),
         start: match.index,
         end: match.index + match[0].length,
+        keyStart,
+        keyEnd,
+        accessorEnd,
         keyType: 'nested',
       });
     }
@@ -140,7 +158,7 @@ export class TranslationService {
 
     // Try nested key lookup first (e.g., "login.inputs.email")
     if (key.includes('.')) {
-      value = this.getNestedValue(translations, key);
+      value = getNestedValue(translations, key);
     } else {
       // Fallback to flat key lookup for backward compatibility
       value = translations[key];
@@ -165,21 +183,6 @@ export class TranslationService {
 
     // Case 3: Unsupported format
     return null;
-  }
-
-  /**
-   * Get nested value from object using dot notation
-   * @param obj The object to traverse
-   * @param path The dot-separated path (e.g., "login.inputs.email")
-   * @returns The value at the path or undefined if not found
-   */
-  getNestedValue(obj: Record<string, unknown>, path: string): unknown {
-    return path.split('.').reduce((current: unknown, key: string) => {
-      if (current && typeof current === 'object' && key in current) {
-        return (current as Record<string, unknown>)[key];
-      }
-      return undefined;
-    }, obj);
   }
 
   /**

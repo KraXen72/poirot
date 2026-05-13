@@ -17,6 +17,7 @@ A VS Code extension that displays inline translation values for i18n method call
 - **inlang Project Support**: Automatically detects and uses inlang project configuration
 - **Flexible Configuration**: Command palette integration for easy locale switching and performance tuning
 - **Inspect Navigation Options**: Use the "Inspect Translation" CodeLens or right-click on a translation call to jump to its message entry
+- **Inline Key Rename**: Use VS Code rename (`F2`) on `m.key()` / `m["nested.key"]()` to update code callsites and locale JSON keys together
 
 ## Motivation & Disclaimer
 

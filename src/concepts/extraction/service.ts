@@ -5,6 +5,7 @@ import { humanId } from 'human-id';
 import { LocaleService } from '../locale/service';
 import { TranslationRepository } from '../translation/repository';
 import { ProjectService } from '../project/service';
+import { formatTranslationCall, setNestedValue } from '../translation/key-utils';
 
 type InterpolationChoice = {
   label: string;
@@ -110,7 +111,7 @@ export class ExtractionService {
       }
 
       // Replace selected text with key call
-      const keyCall = this.formatKeyCall(newKey, interpolationType);
+      const keyCall = formatTranslationCall(newKey, interpolationType);
       return await this.replaceSelectedText(editor, keyCall);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -275,21 +276,19 @@ export class ExtractionService {
   async addToLocaleFiles(workspacePath: string, key: string, value: string): Promise<boolean> {
     try {
       const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
-      const availableLocales = inlangSettings?.locales || ['en'];
       const baseLocale = inlangSettings?.baseLocale || 'en';
+      const locales = new Set(inlangSettings?.locales || []);
+      locales.add(baseLocale);
 
-      // Save base locale first
-      await this.updateLocaleFile(workspacePath, baseLocale, key, value);
-
-      // Wait 2 seconds as requested
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
-      // Save other locales with empty strings
-      for (const locale of availableLocales) {
-        if (locale !== baseLocale) {
-          await this.updateLocaleFile(workspacePath, locale, key, '');
-        }
+      if (locales.size === 0) {
+        locales.add('en');
       }
+
+      await Promise.all(
+        [...locales].map((locale) =>
+          this.updateLocaleFile(workspacePath, locale, key, locale === baseLocale ? value : '')
+        )
+      );
 
       return true;
     } catch (error) {
@@ -328,7 +327,7 @@ export class ExtractionService {
       }
 
       // Set the nested or flat key-value pair
-      this.setNestedValue(translations, key, value);
+      setNestedValue(translations, key, value);
 
       // Write back to file maintaining original key order
       fs.writeFileSync(translationPath, JSON.stringify(translations, null, 2) + '\n', 'utf8');
@@ -337,62 +336,6 @@ export class ExtractionService {
     } catch (error) {
       console.error(`Error updating locale file for ${locale}:`, error);
       throw error;
-    }
-  }
-
-  /**
-   * Set nested value in object using dot notation
-   * @param obj The object to modify
-   * @param path The dot-separated path (e.g., "login.inputs.email")
-   * @param value The value to set
-   */
-  private setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): void {
-    if (!path.includes('.')) {
-      // Simple flat key
-      obj[path] = value;
-      return;
-    }
-
-    const keys = path.split('.');
-    const lastKey = keys.pop();
-
-    if (!lastKey) {
-      return;
-    }
-
-    // Navigate to the parent object, creating nested objects as needed
-    let current = obj as Record<string, unknown>;
-    for (const key of keys) {
-      if (
-        current[key] === undefined ||
-        typeof current[key] !== 'object' ||
-        Array.isArray(current[key])
-      ) {
-        current[key] = {};
-      }
-      current = current[key] as Record<string, unknown>;
-    }
-
-    current[lastKey] = value;
-  }
-
-  /**
-   * Format key call based on key type and interpolation preference
-   * @param key The translation key
-   * @param interpolationType 'template' or 'code'
-   * @returns The formatted key call
-   */
-  formatKeyCall(key: string, interpolationType: 'template' | 'code'): string {
-    const isTemplate = interpolationType === 'template';
-
-    if (key.includes('.')) {
-      // Nested key - use bracket notation
-      const keyCall = `m["${key}"]()`;
-      return isTemplate ? `{${keyCall}}` : keyCall;
-    } else {
-      // Flat key - use dot notation for backward compatibility
-      const keyCall = `m.${key}()`;
-      return isTemplate ? `{${keyCall}}` : keyCall;
     }
   }
 
@@ -433,7 +376,7 @@ export class ExtractionService {
       return false;
     }
 
-    const keyCall = this.formatKeyCall(existingKey, interpolationType);
+    const keyCall = formatTranslationCall(existingKey, interpolationType);
     return await this.replaceSelectedText(editor, keyCall);
   }
 }
