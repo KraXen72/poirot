@@ -27,11 +27,14 @@ class SidebarService {
             const workspacePath = workspaceFolder.uri.fsPath;
             const text = document.getText();
 
+            // Find all m.methodName() calls in the current file
             const translationCalls = this.translationService.findTranslationCalls(text);
             if (translationCalls.length === 0) return [];
 
+            // Get available locales from inlang settings or fallback
             const availableLocales = await this.getAvailableLocales(workspacePath);
             
+            // Create translation data structure
             const translationData = [];
 
             for (const call of translationCalls) {
@@ -44,6 +47,7 @@ class SidebarService {
                     const translations = await this.translationService.loadTranslationsForLocale(workspacePath, locale);
                     const translationValue = translations ? this.translationService.getTranslation(translations, call.methodName) : null;
                     
+                    // Only add locale data if the translation exists (not null/undefined)
                     if (translationValue !== null) {
                         keyData.locales.push({
                             locale,
@@ -53,6 +57,7 @@ class SidebarService {
                     }
                 }
 
+                // Only add keys that have at least one translation
                 if (keyData.locales.length > 0) {
                     translationData.push(keyData);
                 }
@@ -125,20 +130,24 @@ class SidebarService {
                 return;
             }
 
+            // Use existing getTranslation method to get the processed value (handles both simple and complex)
             const translationValue = this.translationService.getTranslation(translations, key);
             if (translationValue == null) {
                 vscode.window.showWarningMessage(`Key "${key}" not found in translation file`);
                 return;
             }
 
+            // Remove the asterisk if present (added by complex structure processing)
             const searchValue = translationValue.endsWith('*') ?
                 translationValue.slice(0, -1) : translationValue;
 
+            // Try to navigate to the value first
             if (await this.navigateToValue(editor, searchValue)) {
                 console.log(`🎯 Navigated to key "${key}" (value: "${searchValue}") in ${document.fileName}`);
                 return;
             }
 
+            // Fallback: navigate to the key itself
             if (await this.navigateToKeyName(editor, key)) {
                 console.log(`🎯 Navigated to key "${key}" (key location) in ${document.fileName}`);
                 return;
@@ -170,6 +179,7 @@ class SidebarService {
             const match = valueRegex.exec(text);
             
             if (match) {
+                // Highlight the value (without quotes)
                 const valueStart = match.index + 1; // Skip opening quote
                 const valueEnd = valueStart + value.length;
                 
@@ -243,20 +253,25 @@ class SidebarService {
             const workspacePath = workspaceFolder.uri.fsPath;
             const filePath = document.uri.fsPath;
             
+            // Get the path pattern for translation files
             const pathPattern = await this.localeService.getTranslationPathPatternAsync(workspacePath);
             const relativePath = path.relative(workspacePath, filePath);
             
+            // Normalize paths for comparison (handle Windows paths)
             const normalizedRelativePath = relativePath.replace(/\\/g, '/');
             
+            // Use the actual available locales from configuration instead of hardcoding
             const availableLocales = await this.localeService.getAvailableLocales(workspacePath);
             
             for (const locale of availableLocales) {
                 let expectedPath = pathPattern.replace('{locale}', locale);
                 
+                // Handle different path formats
                 if (expectedPath.startsWith('./')) {
                     expectedPath = expectedPath.substring(2);
                 }
                 
+                // Normalize expected path
                 expectedPath = expectedPath.replace(/\\/g, '/');
                 
                 if (normalizedRelativePath === expectedPath) {
