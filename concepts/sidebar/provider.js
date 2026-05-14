@@ -41,6 +41,7 @@ class SidebarTreeProvider {
                 displayPath = path.relative(workspaceFolder.uri.fsPath, this.currentFilePath);
             }
             
+            // Ensure path starts with / for consistent display
             if (!displayPath.startsWith('/')) {
                 displayPath = '/' + displayPath;
             }
@@ -58,6 +59,7 @@ class SidebarTreeProvider {
      * @param {boolean} force Force refresh even if it's a translation file
      */
     async refresh(document, force = false) {
+        // Cancel any pending clear operation
         if (this.clearTimeout) {
             clearTimeout(this.clearTimeout);
             this.clearTimeout = null;
@@ -66,15 +68,19 @@ class SidebarTreeProvider {
         if (document) {
             const isTransFile = await this.sidebarService.isTranslationFile(document);
             
+            // Don't update sidebar if we're viewing a translation file (unless forced)
+            // This preserves context when navigating to translation files
             if (!force && isTransFile) {
+                // Still fire the event to refresh the UI with preserved context
                 this._onDidChangeTreeData.fire();
-                this.updateTitle();
-                return;
+                this.updateTitle(); // Update title even when preserving context
+                return; // Keep current context
             }
             
             this.translationData = await this.sidebarService.getTranslationData(document);
             this.currentFilePath = document.uri.fsPath;
         } else {
+            // Debounce clearing to handle rapid editor switches
             this.clearTimeout = setTimeout(() => {
                 this.translationData = [];
                 this.currentFilePath = null;
@@ -82,7 +88,7 @@ class SidebarTreeProvider {
                 this.updateTitle();
                 this.clearTimeout = null;
             }, 150);
-            return;
+            return; // Don't fire the event now, wait for timeout or cancellation
         }
         this._onDidChangeTreeData.fire();
         this.updateTitle();
@@ -104,6 +110,7 @@ class SidebarTreeProvider {
      */
     async getChildren(element) {
         if (!element) {
+            // Get current locale and workspace path
             const currentLocale = await this.localeService.getCurrentLocale();
             const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
             
@@ -115,6 +122,7 @@ class SidebarTreeProvider {
             
             const workspacePath = workspaceFolder.uri.fsPath;
             
+            // Load current locale translations
             let currentTranslations = null;
             try {
                 currentTranslations = await this.translationService.loadTranslationsForLocale(workspacePath, currentLocale);
@@ -122,6 +130,7 @@ class SidebarTreeProvider {
                 console.error('Failed to load translations:', error);
             }
             
+            // Return translation keys with current locale values
             return this.translationData.map(keyData => {
                 let currentValue = null;
                 if (currentTranslations) {
@@ -133,6 +142,7 @@ class SidebarTreeProvider {
         }
 
         if (element instanceof TranslationKeyNode) {
+            // Return locale items for this key
             const keyData = this.translationData.find(data => data.key === element.key);
             if (keyData) {
                 return keyData.locales.map(localeData => 
@@ -150,6 +160,8 @@ class SidebarTreeProvider {
     }
 }
 
+// FileContextNode removed - using proper tree view title instead
+
 /**
  * Tree node for translation keys
  */
@@ -159,6 +171,7 @@ class TranslationKeyNode extends vscode.TreeItem {
         this.key = key;
         
         if (currentValue) {
+            // Truncate long values for display
             const displayValue = currentValue.length > 40 ? currentValue.substring(0, 37) + '...' : currentValue;
             this.description = `"${displayValue}" • ${localeCount} ${localeCount === 1 ? 'locale' : 'locales'}`;
         } else {
@@ -166,6 +179,7 @@ class TranslationKeyNode extends vscode.TreeItem {
         }
         
         this.contextValue = 'translationKey';
+        // No icon for cleaner look
     }
 }
 
@@ -174,6 +188,7 @@ class TranslationKeyNode extends vscode.TreeItem {
  */
 class TranslationItemNode extends vscode.TreeItem {
     constructor(locale, value, key, workspacePath) {
+        // Truncate long values for display
         const displayValue = value.length > 50 ? value.substring(0, 47) + '...' : value;
         const label = `[${locale}] "${displayValue}"`;
         
@@ -185,12 +200,14 @@ class TranslationItemNode extends vscode.TreeItem {
         this.workspacePath = workspacePath;
         this.contextValue = 'translationItem';
         
+        // Add command for clicking behavior with clearer indication
         this.command = {
             command: 'elementaryWatson.openTranslationFile',
             title: 'Navigate to translation',
             arguments: [this.workspacePath, this.locale, this.key]
         };
 
+        // Show empty values differently and add navigation hint
         if (!value || value.trim() === '') {
             this.description = '(empty) → click to navigate';
         } else {

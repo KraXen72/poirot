@@ -3,6 +3,9 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const { findKeyLine } = require('../utils/json-utils');
 
+/**
+ * Service for managing sidebar translation data
+ */
 class SidebarService {
     constructor(translationService, localeService) {
         this.translationService = translationService;
