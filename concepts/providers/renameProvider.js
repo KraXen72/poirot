@@ -44,8 +44,6 @@ async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translation
     await _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService);
 }
 
-// ── locale files ─────────────────────────────────────────────────────────────
-
 async function _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService) {
     const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey, localeService);
     await Promise.all(
@@ -82,8 +80,6 @@ async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
     }
     return files;
 }
-
-// ── source files ──────────────────────────────────────────────────────────────
 
 async function _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService) {
     const files = await vscode.workspace.findFiles(
@@ -196,8 +192,6 @@ function _buildSourceEdit(document, call, text, newKey) {
         replacement,
     };
 }
-
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 async function _readText(filePath) {
     try { return await fs.readFile(filePath, 'utf8'); } catch { return null; }
