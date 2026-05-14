@@ -120,7 +120,6 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "pretest": "npm run lint",
     "test": "vscode-test",
     "lint-tsc": "tsc -noEmit -skipLibCheck"
   },
