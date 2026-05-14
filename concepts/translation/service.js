@@ -5,9 +5,9 @@ const { LocaleService } = require('../locale/service');
  * Service for processing translation calls and coordinating translation loading
  */
 class TranslationService {
-    constructor() {
-        this.translationRepository = new TranslationRepository();
-        this.localeService = new LocaleService();
+    constructor(translationRepository = new TranslationRepository(), localeService = new LocaleService()) {
+        this.translationRepository = translationRepository;
+        this.localeService = localeService;
     }
 
     /**
@@ -61,7 +61,7 @@ class TranslationService {
      * @returns {Promise<Object|null>} The translations object or null if not found
      */
     async loadTranslationsForLocale(workspacePath, locale) {
-        const translationPath = this.localeService.resolveTranslationPath(workspacePath, locale);
+        const translationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, locale);
         return await this.translationRepository.loadTranslations(translationPath, locale);
     }
 
@@ -161,8 +161,7 @@ class TranslationService {
      */
     async searchKeyInAllLocales(workspacePath, key, currentLocale) {
         try {
-            const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
-            const availableLocales = inlangSettings?.locales || ['en'];
+            const availableLocales = await this.localeService.getAvailableLocales(workspacePath);
             
             // Search through all locales except the current one
             for (const locale of availableLocales) {

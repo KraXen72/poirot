@@ -1,6 +1,4 @@
 const vscode = require('vscode');
-const { TranslationService } = require('../translation/service');
-const { LocaleService } = require('../locale/service');
 const { EditorDecorator } = require('./decorator');
 const { TranslationCodeLensProvider } = require('./codelens');
 
@@ -8,9 +6,9 @@ const { TranslationCodeLensProvider } = require('./codelens');
  * Service for processing VS Code documents and managing translation displays
  */
 class EditorService {
-    constructor() {
-        this.translationService = new TranslationService();
-        this.localeService = new LocaleService();
+    constructor(translationService, localeService) {
+        this.translationService = translationService;
+        this.localeService = localeService;
         this.editorDecorator = new EditorDecorator();
         this.codeLensProvider = new TranslationCodeLensProvider();
     }

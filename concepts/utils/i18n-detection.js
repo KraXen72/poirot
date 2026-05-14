@@ -120,28 +120,10 @@ function getProjectRoot(document) {
 
 /**
  * @param {string} projectRoot
- * @returns {string[]}
+ * @returns {Promise<string[]>}
  */
-function getLocaleFilePaths(projectRoot) {
-    /** @type {InlangSettings | null} */
-    const inlangSettings = /** @type {InlangSettings | null} */ (localeService.loadInlangSettings(projectRoot));
-
-    if (Array.isArray(inlangSettings?.locales) && inlangSettings.locales.length > 0) {
-        return inlangSettings.locales
-            .map(locale => localeService.resolveTranslationPath(projectRoot, locale))
-            .filter(filePath => fs.existsSync(filePath));
-    }
-
-    const fallbackLocale = inlangSettings?.baseLocale || 'en';
-    const samplePath = localeService.resolveTranslationPath(projectRoot, fallbackLocale);
-    const sampleDir = path.dirname(samplePath);
-    if (!fs.existsSync(sampleDir)) {
-        return [];
-    }
-
-    return fs.readdirSync(sampleDir)
-        .filter(fileName => fileName.endsWith('.json'))
-        .map(fileName => path.join(sampleDir, fileName));
+async function getLocaleFilePaths(projectRoot) {
+    return localeService.getLocaleFilePaths(projectRoot);
 }
 
 module.exports = {

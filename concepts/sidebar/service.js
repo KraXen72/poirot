@@ -1,14 +1,15 @@
 const vscode = require('vscode');
-const { TranslationService } = require('../translation/service');
-const { LocaleService } = require('../locale/service');
+const fsPromises = require('fs/promises');
+const path = require('path');
+const { findKeyLine } = require('../utils/json-utils');
 
 /**
  * Service for managing sidebar translation data
  */
 class SidebarService {
-    constructor() {
-        this.translationService = new TranslationService();
-        this.localeService = new LocaleService();
+    constructor(translationService, localeService) {
+        this.translationService = translationService;
+        this.localeService = localeService;
     }
 
     /**
@@ -76,36 +77,7 @@ class SidebarService {
      * @returns {Promise<Array<string>>} Array of available locale codes
      */
     async getAvailableLocales(workspacePath) {
-        try {
-            const inlangSettings = this.localeService.loadInlangSettings(workspacePath);
-            
-            if (inlangSettings && inlangSettings.locales) {
-                return inlangSettings.locales;
-            }
-
-            // Fallback: try to detect existing locale files
-            const fs = require('fs');
-            const path = require('path');
-            
-            const messagesDir = path.join(workspacePath, 'messages');
-            if (fs.existsSync(messagesDir)) {
-                const files = fs.readdirSync(messagesDir);
-                const locales = files
-                    .filter(file => file.endsWith('.json'))
-                    .map(file => path.basename(file, '.json'));
-                
-                if (locales.length > 0) {
-                    return locales;
-                }
-            }
-
-            // Ultimate fallback
-            return ['en'];
-
-        } catch (error) {
-            console.error('Error getting available locales:', error);
-            return ['en'];
-        }
+        return this.localeService.getAvailableLocales(workspacePath);
     }
 
     /**
@@ -117,11 +89,12 @@ class SidebarService {
      */
     async openTranslationFile(workspacePath, locale, key) {
         try {
-            const translationPath = this.localeService.resolveTranslationPath(workspacePath, locale);
+            const translationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, locale);
             
             // Check if file exists
-            const fs = require('fs');
-            if (!fs.existsSync(translationPath)) {
+            try {
+                await fsPromises.access(translationPath);
+            } catch {
                 vscode.window.showErrorMessage(`Translation file not found: ${translationPath}`);
                 return;
             }
@@ -160,7 +133,6 @@ class SidebarService {
             const filePath = document.uri.fsPath;
             
             // Determine locale from file path
-            const path = require('path');
             const fileName = path.basename(filePath, '.json');
             const locale = fileName; // Assuming file name is the locale
             
@@ -215,7 +187,8 @@ class SidebarService {
             const document = editor.document;
             const text = document.getText();
             
-            const valueRegex = new RegExp(`"${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
+            const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const valueRegex = new RegExp(`"${escaped}"`, 'g');
             const match = valueRegex.exec(text);
             
             if (match) {
@@ -250,75 +223,19 @@ class SidebarService {
         try {
             const document = editor.document;
             const text = document.getText();
-            
-            if (key.includes('.')) {
-                // Nested key - search for the final key name
-                const keyParts = key.split('.');
-                const finalKey = keyParts[keyParts.length - 1];
-                
-                // Create a regex pattern that matches the nested structure
-                // This is more complex, so we'll use a simpler approach: search for the final key
-                const keyRegex = new RegExp(`"${finalKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"\\s*:`, 'g');
-                
-                let match;
-                const matches = [];
-                
-                // Find all matches and look for the one in the right context
-                while ((match = keyRegex.exec(text)) !== null) {
-                    matches.push(match);
-                }
-                
-                // For nested keys, try to find the correct match by checking context
-                for (const match of matches) {
-                    // Simple heuristic: check if we're in the right nested context
-                    const beforeText = text.substring(Math.max(0, match.index - 200), match.index);
-                    const containsParentKeys = keyParts.slice(0, -1).every(parentKey => 
-                        beforeText.includes(`"${parentKey}"`)
-                    );
-                    
-                    if (containsParentKeys || matches.length === 1) {
-                        const keyStart = match.index + 1; // Skip opening quote
-                        const keyEnd = keyStart + finalKey.length;
-                        
-                        const startPos = document.positionAt(keyStart);
-                        const endPos = document.positionAt(keyEnd);
-                        
-                        const selection = new vscode.Selection(startPos, endPos);
-                        editor.selection = selection;
-                        editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
-                        
-                        return true;
-                    }
-                }
-                
-                // If no good context match, use first match
-                if (matches.length > 0) {
-                    const match = matches[0];
-                    const keyStart = match.index + 1; // Skip opening quote
-                    const keyEnd = keyStart + finalKey.length;
-                    
-                    const startPos = document.positionAt(keyStart);
-                    const endPos = document.positionAt(keyEnd);
-                    
+
+            const lineNumber = findKeyLine(text, key);
+            if (lineNumber !== null) {
+                const line = document.lineAt(lineNumber).text;
+                const leafKey = key.split('.').pop();
+                const escaped = leafKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const match = new RegExp(`"${escaped}"\\s*:`, 'g').exec(line);
+                if (match) {
+                    const startPos = new vscode.Position(lineNumber, match.index + 1);
+                    const endPos = new vscode.Position(lineNumber, match.index + 1 + leafKey.length);
                     const selection = new vscode.Selection(startPos, endPos);
                     editor.selection = selection;
                     editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
-                    
-                    return true;
-                }
-            } else {
-                // Flat key - simple search
-                const keyRegex = new RegExp(`"${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g');
-                const keyMatch = keyRegex.exec(text);
-                
-                if (keyMatch) {
-                    const startPos = document.positionAt(keyMatch.index);
-                    const endPos = document.positionAt(keyMatch.index + keyMatch[0].length);
-                    
-                    const selection = new vscode.Selection(startPos, endPos);
-                    editor.selection = selection;
-                    editor.revealRange(selection, vscode.TextEditorRevealType.InCenter);
-                    
                     return true;
                 }
             }
@@ -350,16 +267,14 @@ class SidebarService {
             const filePath = document.uri.fsPath;
             
             // Get the path pattern for translation files
-            const pathPattern = this.localeService.getTranslationPathPattern(workspacePath);
-            
-            const path = require('path');
+            const pathPattern = await this.localeService.getTranslationPathPatternAsync(workspacePath);
             const relativePath = path.relative(workspacePath, filePath);
             
             // Normalize paths for comparison (handle Windows paths)
             const normalizedRelativePath = relativePath.replace(/\\/g, '/');
             
             // Use the actual available locales from configuration instead of hardcoding
-            const availableLocales = await this.getAvailableLocales(workspacePath);
+            const availableLocales = await this.localeService.getAvailableLocales(workspacePath);
             
             for (const locale of availableLocales) {
                 let expectedPath = pathPattern.replace('{locale}', locale);

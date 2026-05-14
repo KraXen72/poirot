@@ -1,15 +1,14 @@
 const vscode = require('vscode');
-const { LocaleService } = require('../locale/service');
-const { TranslationService } = require('../translation/service');
+const path = require('path');
 
 /**
  * Tree data provider for the ElementaryWatson sidebar
  */
 class SidebarTreeProvider {
-    constructor(sidebarService) {
+    constructor(sidebarService, localeService, translationService) {
         this.sidebarService = sidebarService;
-        this.localeService = new LocaleService();
-        this.translationService = new TranslationService();
+        this.localeService = localeService;
+        this.translationService = translationService;
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
         this.translationData = [];
@@ -32,7 +31,6 @@ class SidebarTreeProvider {
         if (!this.treeView) return;
         
         if (this.currentFilePath && this.translationData.length > 0) {
-            const path = require('path');
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(this.currentFilePath));
             let displayPath = this.currentFilePath;
             

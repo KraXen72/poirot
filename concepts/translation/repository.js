@@ -1,4 +1,4 @@
-const fs = require('fs');
+const fsPromises = require('fs/promises');
 const path = require('path');
 
 /**
@@ -14,31 +14,21 @@ class TranslationRepository {
     async loadTranslations(translationFilePath, locale) {
         try {
             console.log(`📖 Reading translations from: ${path.basename(translationFilePath)} (locale: ${locale})`);
-            
-            if (!fs.existsSync(translationFilePath)) {
-                console.log(`❌ Translation file not found: ${translationFilePath}`);
-                return null;
-            }
 
-            const fileContent = fs.readFileSync(translationFilePath, 'utf8');
+            const fileContent = await fsPromises.readFile(translationFilePath, 'utf8');
             const translations = JSON.parse(fileContent);
             
             console.log(`✅ Loaded ${Object.keys(translations).length} translations for locale '${locale}'`);
             
             return translations;
         } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log(`❌ Translation file not found: ${translationFilePath}`);
+                return null;
+            }
             console.log(`❌ Failed to load translations: ${error.message}`);
             return null;
         }
-    }
-
-    /**
-     * Check if a translation file exists
-     * @param {string} translationFilePath The full path to the translation file
-     * @returns {boolean} True if the file exists
-     */
-    translationFileExists(translationFilePath) {
-        return fs.existsSync(translationFilePath);
     }
 }
 

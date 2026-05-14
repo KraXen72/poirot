@@ -2,8 +2,8 @@
 const vscode = require('vscode');
 const fs = require('fs/promises');
 const path = require('path');
-const { TranslationService } = require('../translation/service');
 const { getKeyAtPosition, getKeyRangeAtPosition, getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
+const { getNestedValue, stringifyJsonLike, renameJsonKey } = require('../utils/json-utils');
 
 const KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
 
@@ -12,8 +12,8 @@ const KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
  */
 
 class TranslationKeyRenameProvider {
-    constructor() {
-        this.translationService = new TranslationService();
+    constructor(translationService) {
+        this.translationService = translationService;
     }
 
     /**
@@ -88,7 +88,7 @@ async function renameInLocaleFiles(edit, projectRoot, oldKey, newKey) {
  * @returns {Promise<Array<{ uri: import('vscode').Uri, raw: string, json: Record<string, unknown>, hasOldKey: boolean, hasNewKey: boolean }>>}
  */
 async function loadLocaleFiles(projectRoot, oldKey, newKey) {
-    const localePaths = getLocaleFilePaths(projectRoot);
+    const localePaths = await getLocaleFilePaths(projectRoot);
     const files = [];
 
     for (const filePath of localePaths) {
@@ -229,159 +229,6 @@ function buildSourceEdit(document, call, text, newKey) {
  */
 function isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
-}
-
-/**
- * @param {unknown} obj
- * @param {string[]} segments
- * @returns {unknown}
- */
-function getNestedValue(obj, segments) {
-    return segments.reduce((current, segment) => {
-        if (!current || typeof current !== 'object' || Array.isArray(current)) {
-            return undefined;
-        }
-
-        return /** @type {Record<string, unknown>} */ (current)[segment];
-    }, obj);
-}
-
-/**
- * @param {Record<string, unknown>} obj
- * @param {string} oldKey
- * @param {string} newKey
- * @returns {Record<string, unknown>}
- */
-function renameJsonKey(obj, oldKey, newKey) {
-    if (oldKey === newKey) {
-        return obj;
-    }
-
-    const oldSegments = oldKey.split('.');
-    const newSegments = newKey.split('.');
-    const value = getNestedValue(obj, oldSegments);
-
-    if (value === undefined) {
-        return obj;
-    }
-
-    if (oldSegments.length === newSegments.length && oldSegments.slice(0, -1).join('.') === newSegments.slice(0, -1).join('.')) {
-        return renameWithinSameParent(obj, oldSegments, newSegments);
-    }
-
-    const clone = /** @type {Record<string, unknown>} */ (deepClone(obj));
-    deleteNestedValue(clone, oldSegments);
-    setNestedValue(clone, newSegments, value);
-    return clone;
-}
-
-/**
- * @param {Record<string, unknown>} obj
- * @param {string[]} oldSegments
- * @param {string[]} newSegments
- * @returns {Record<string, unknown>}
- */
-function renameWithinSameParent(obj, oldSegments, newSegments) {
-    const parentSegments = oldSegments.slice(0, -1);
-    const parent = getNestedValue(obj, parentSegments);
-
-    if (!parent || typeof parent !== 'object' || Array.isArray(parent)) {
-        const clone = /** @type {Record<string, unknown>} */ (deepClone(obj));
-        deleteNestedValue(clone, oldSegments);
-        setNestedValue(clone, newSegments, getNestedValue(obj, oldSegments));
-        return clone;
-    }
-
-    const oldLeaf = oldSegments[oldSegments.length - 1];
-    const newLeaf = newSegments[newSegments.length - 1];
-    const rebuiltParent = /** @type {Record<string, unknown>} */ ({});
-
-    for (const [key, value] of Object.entries(parent)) {
-        rebuiltParent[key === oldLeaf ? newLeaf : key] = value;
-    }
-
-    if (parentSegments.length === 0) {
-        return rebuiltParent;
-    }
-
-    const clone = /** @type {Record<string, unknown>} */ (deepClone(obj));
-    setNestedValue(clone, parentSegments, rebuiltParent);
-    return clone;
-}
-
-/**
- * @param {Record<string, unknown>} obj
- * @param {string[]} segments
- * @returns {void}
- */
-function deleteNestedValue(obj, segments) {
-    if (segments.length === 0) {
-        return;
-    }
-
-    const parentSegments = segments.slice(0, -1);
-    const parent = /** @type {Record<string, unknown> | unknown} */ (parentSegments.length === 0 ? obj : getNestedValue(obj, parentSegments));
-
-    if (!parent || typeof parent !== 'object' || Array.isArray(parent)) {
-        return;
-    }
-
-    delete /** @type {Record<string, unknown>} */ (parent)[segments[segments.length - 1]];
-}
-
-/**
- * @param {Record<string, unknown>} obj
- * @param {string[]} segments
- * @param {unknown} value
- * @returns {unknown}
- */
-function setNestedValue(obj, segments, value) {
-    if (segments.length === 0) {
-        return value;
-    }
-
-    let current = /** @type {Record<string, unknown>} */ (obj);
-
-    for (let index = 0; index < segments.length - 1; index++) {
-        const segment = segments[index];
-        if (current[segment] === undefined || typeof current[segment] !== 'object' || Array.isArray(current[segment])) {
-            current[segment] = {};
-        }
-
-        current = /** @type {Record<string, unknown>} */ (current[segment]);
-    }
-
-    current[segments[segments.length - 1]] = value;
-}
-
-/**
- * @param {unknown} value
- * @returns {unknown}
- */
-function deepClone(value) {
-    return /** @type {Record<string, unknown>} */ (JSON.parse(JSON.stringify(value)));
-}
-
-/**
- * @param {string} raw
- * @returns {string | number}
- */
-function detectIndent(raw) {
-    const match = raw.match(/^[\t ]+/m);
-    if (!match) {
-        return 2;
-    }
-
-    return match[0].startsWith('\t') ? '\t' : match[0].length;
-}
-
-/**
- * @param {string} raw
- * @param {Record<string, unknown>} json
- * @returns {string}
- */
-function stringifyJsonLike(raw, json) {
-    return JSON.stringify(json, null, detectIndent(raw)) + (raw.endsWith('\n') ? '\n' : '');
 }
 
 module.exports = {

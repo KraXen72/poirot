@@ -6,17 +6,19 @@ const { ExtractionService } = require('../extraction/service');
 const { SidebarService } = require('../sidebar/service');
 const { SidebarTreeProvider } = require('../sidebar/provider');
 const { TranslationKeyRenameProvider } = require('../providers/renameProvider');
+const { TranslationService } = require('../translation/service');
 
 /**
  * Extension activator that manages the lifecycle and event handling
  */
 class ExtensionActivator {
     constructor() {
-        this.editorService = new EditorService();
         this.localeService = new LocaleService();
-        this.extractionService = new ExtractionService();
-        this.sidebarService = new SidebarService();
-        this.sidebarTreeProvider = new SidebarTreeProvider(this.sidebarService);
+        this.translationService = new TranslationService();
+        this.editorService = new EditorService(this.translationService, this.localeService);
+        this.extractionService = new ExtractionService(this.localeService, this.translationService);
+        this.sidebarService = new SidebarService(this.translationService, this.localeService);
+        this.sidebarTreeProvider = new SidebarTreeProvider(this.sidebarService, this.localeService, this.translationService);
         this.disposables = [];
         this.treeView = null; // Tree view instance for title updates
         
@@ -282,7 +284,10 @@ class ExtensionActivator {
                 return;
             }
 
-            const success = await this.extractionService.extractSelectedText(editor);
+            // Capture state synchronously before any await
+            const document = editor.document;
+            const selection = editor.selection;
+            const success = await this.extractionService.extractSelectedText(editor, document, selection);
             if (success) {
                 vscode.window.showInformationMessage('Text extracted successfully to locale files');
             }
@@ -296,31 +301,32 @@ class ExtensionActivator {
      */
     registerCopyTranslationCommand() {
         const copyTranslationCommand = vscode.commands.registerCommand('elementaryWatson.copyTranslation', async (translationValue, start, end) => {
-            // Open an input box and save input as newValue
-            const newValue = await vscode.window.showInputBox({
-                prompt: 'Edit translation (will create new key)',
-                value: translationValue // Pre-fill with the current translation
-            });
-
-            // Get editor
+            // Get editor first, before any await
             const editor = vscode.window.activeTextEditor;
             if (!editor) {
                 vscode.window.showErrorMessage('No active text editor');
                 return;
             }
+            
             // Check for supported document
             if (!this.editorService.isSupportedDocument(editor.document)) {
                 vscode.window.showErrorMessage('Text extraction is only supported in JavaScript, TypeScript, and Svelte files');
                 return;
             }
 
-            // Select the text corresponding to the range (start -> end)
-            const range = new vscode.Range(start, end);
-            editor.selection = new vscode.Selection(range.start, range.end);
+            // Capture state synchronously
+            const document = editor.document;
+            const selection = new vscode.Selection(start, end);
+
+            // Open an input box and save input as newValue
+            const newValue = await vscode.window.showInputBox({
+                prompt: 'Edit translation (will create new key)',
+                value: translationValue // Pre-fill with the current translation
+            });
 
             // Filter only new values, for old value we dont need to do anything
             if (newValue !== undefined && newValue != translationValue) {
-                const success = await this.extractionService.createNewBinding(editor, newValue);
+                const success = await this.extractionService.createNewBinding(editor, document, selection, newValue);
                 if (success) {
                     vscode.window.showInformationMessage('New binding created successfully');
                 }
@@ -372,7 +378,7 @@ class ExtensionActivator {
      * Register the rename provider
      */
     registerRenameProvider() {
-        const renameProvider = new TranslationKeyRenameProvider();
+        const renameProvider = new TranslationKeyRenameProvider(this.translationService);
 
         const renameDisposable = vscode.languages.registerRenameProvider(
             [
@@ -404,9 +410,16 @@ class ExtensionActivator {
             // Get available locales
             const availableLocales = await this.sidebarService.getAvailableLocales(workspacePath);
             
+            // Resolve all translation paths asynchronously
+            const localePaths = await Promise.all(
+                availableLocales.map(locale =>
+                    this.localeService.resolveTranslationPathAsync(workspacePath, locale)
+                        .then(translationPath => ({ locale, translationPath }))
+                )
+            );
+            
             // Create file watchers for each locale
-            for (const locale of availableLocales) {
-                const translationPath = this.localeService.resolveTranslationPath(workspacePath, locale);
+            for (const { locale, translationPath } of localePaths) {
                 const relativePath = path.relative(workspacePath, translationPath);
                 
                 // Create a file system watcher for this specific translation file
