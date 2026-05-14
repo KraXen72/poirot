@@ -33,30 +33,24 @@ class EditorService {
             const editor = vscode.window.visibleTextEditors.find(e => e.document === document);
             if (!editor) return;
 
-            // Clear previous decorations
             this.editorDecorator.clearDecorations(editor);
 
             const text = document.getText();
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
             if (!workspaceFolder) return;
 
-            // Find all m.methodName() calls
             const translationCalls = this.translationService.findTranslationCalls(text);
             if (translationCalls.length === 0) {
-                // Clear CodeLens when no translation calls are found
                 this.codeLensProvider.updateTranslationResults(document, []);
                 return;
             }
 
-            // Load translations using the current locale
-            const currentLocale = this.localeService.getCurrentLocale();
+            const currentLocale = await this.localeService.getCurrentLocale();
             const translations = await this.translationService.loadTranslationsForLocale(
                 workspaceFolder.uri.fsPath, 
                 currentLocale
             );
 
-            // Process translation calls to get resolved values with warning states
-            // Note: We process even if translations is null to show warning labels
             const translationResults = await this.translationService.processTranslationCallsWithWarnings(
                 translationCalls, 
                 translations || {}, 
@@ -65,19 +59,15 @@ class EditorService {
             );
             
             if (translationResults.length === 0) {
-                // Clear CodeLens when no translation results are found
                 this.codeLensProvider.updateTranslationResults(document, []);
                 return;
             }
 
-            // Create and apply decorations for translation values
             const decorations = this.editorDecorator.createDecorations(document, translationResults);
             this.editorDecorator.applyDecorations(editor, decorations);
 
-            // Update CodeLens provider for clickable navigation
             this.codeLensProvider.updateTranslationResults(document, translationResults);
 
-            // Log the results
             const translationValues = translationResults.map(result => {
                 if (result.warningType === 'noLocale') {
                     return `${result.methodName}: ❌ no locale defined`;
@@ -118,4 +108,4 @@ class EditorService {
     }
 }
 
-module.exports = { EditorService }; 
+module.exports = { EditorService };

@@ -20,6 +20,7 @@ class ExtensionActivator {
         this.disposables = [];
         this.translationFileWatchers = [];
         this.documentUpdateTimeouts = new Map();
+        this._pendingRenameUris = null;
     }
 
     getDebounceDelay() {
@@ -59,7 +60,7 @@ class ExtensionActivator {
                 return true;
             }
 
-            const oldText = change.rangeLength > 0 ? true : false;
+            const oldText = change.rangeLength > 0;
             const newText = change.text;
 
             if (oldText || newText.includes('m.') || newText.includes('()')) {
@@ -68,6 +69,27 @@ class ExtensionActivator {
         }
 
         return false;
+    }
+
+    beginRename(uris) {
+        this._pendingRenameUris = new Set(uris);
+    }
+
+    _isPendingRename(uri) {
+        return this._pendingRenameUris?.has(uri) ?? false;
+    }
+
+    async _acknowledgeRenameUri(uri) {
+        if (!this._pendingRenameUris?.has(uri)) return;
+        this._pendingRenameUris.delete(uri);
+        if (this._pendingRenameUris.size === 0) {
+            this._pendingRenameUris = null;
+            await this._postRenameRefresh();
+        }
+    }
+
+    async _postRenameRefresh() {
+        await this.processActiveEditor();
     }
 
     activate(context) {
@@ -116,7 +138,7 @@ class ExtensionActivator {
 
     registerChangeLocaleCommand() {
         const changeLocaleCommand = vscode.commands.registerCommand('elementaryWatson.changeLocale', async () => {
-            const currentLocale = this.localeService.getCurrentLocale();
+            const currentLocale = await this.localeService.getCurrentLocale();
             const newLocale = await vscode.window.showInputBox({
                 prompt: 'Enter the locale code (e.g., en, es, fr)',
                 value: currentLocale,
@@ -212,7 +234,7 @@ class ExtensionActivator {
             if (!editor) return;
 
             const { document, selection } = editor;
-            const oldKey = getKeyAtPosition(document, selection.active);
+            const oldKey = getKeyAtPosition(document, selection.active, this.translationService);
             if (!oldKey) {
                 vscode.window.showErrorMessage('Place the cursor on a translation key to rename it.');
                 return;
@@ -227,7 +249,7 @@ class ExtensionActivator {
 
             const edit = new vscode.WorkspaceEdit();
             try {
-                await buildRenameEdit(edit, document, oldKey, newKey, this.translationService);
+                await buildRenameEdit(edit, document, oldKey, newKey, this.translationService, this.localeService);
             } catch (err) {
                 vscode.window.showErrorMessage(`Rename failed: ${err.message}`);
                 return;
@@ -346,27 +368,26 @@ class ExtensionActivator {
         if (!workspaceFolders) return;
 
         for (const folder of workspaceFolders) {
-            const pattern = new vscode.RelativePattern(folder, '**/*.json');
-            const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+            const workspacePath = folder.uri.fsPath;
+            const pathPattern = await this.localeService.getTranslationPathPatternAsync(workspacePath);
+            // Replace {locale} with a glob wildcard to match all locale files
+            const globPattern = pathPattern.replace('{locale}', '*').replace(/^\.\//, '');
+            const watcher = vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(folder, globPattern)
+            );
 
-            watcher.onDidChange(async (uri) => {
+            const handleChange = async (uri) => {
                 console.log(`\n📝 Translation file changed: ${path.basename(uri.fsPath)}`);
                 const activeEditor = vscode.window.activeTextEditor;
                 if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
                     await this.editorService.processDocument(activeEditor.document);
                     await this.sidebarTreeProvider.refresh(activeEditor.document);
                 }
-            });
+            };
 
-            watcher.onDidCreate(async (uri) => {
-                console.log(`\n✨ Translation file created: ${path.basename(uri.fsPath)}`);
-                const activeEditor = vscode.window.activeTextEditor;
-                if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
-                    await this.editorService.processDocument(activeEditor.document);
-                    await this.sidebarTreeProvider.refresh(activeEditor.document);
-                }
-            });
-
+            watcher.onDidChange(handleChange);
+            watcher.onDidCreate(handleChange);
+            watcher.onDidDelete(handleChange);
             this.translationFileWatchers.push(watcher);
         }
     }
@@ -406,7 +427,7 @@ class ExtensionActivator {
         }
 
         const workspacePath = workspaceFolder.uri.fsPath;
-        const currentLocale = this.localeService.getCurrentLocale();
+        const currentLocale = await this.localeService.getCurrentLocale();
 
         const activeEditor = vscode.window.activeTextEditor;
         if (activeEditor && activeEditor.document.uri.fsPath === filePath) {

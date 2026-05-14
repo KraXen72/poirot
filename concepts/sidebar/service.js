@@ -3,14 +3,8 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const { findKeyLine } = require('../utils/json-utils');
 
-/**
- * Service for managing sidebar translation data
- */
 class SidebarService {
     constructor(translationService, localeService) {
-        if (!translationService || !localeService) {
-            throw new Error('SidebarService requires translationService and localeService');
-        }
         this.translationService = translationService;
         this.localeService = localeService;
     }
@@ -30,14 +24,11 @@ class SidebarService {
             const workspacePath = workspaceFolder.uri.fsPath;
             const text = document.getText();
 
-            // Find all m.methodName() calls in the current file
             const translationCalls = this.translationService.findTranslationCalls(text);
             if (translationCalls.length === 0) return [];
 
-            // Get available locales from inlang settings or fallback
             const availableLocales = await this.getAvailableLocales(workspacePath);
             
-            // Create translation data structure
             const translationData = [];
 
             for (const call of translationCalls) {
@@ -50,7 +41,6 @@ class SidebarService {
                     const translations = await this.translationService.loadTranslationsForLocale(workspacePath, locale);
                     const translationValue = translations ? this.translationService.getTranslation(translations, call.methodName) : null;
                     
-                    // Only add locale data if the translation exists (not null/undefined)
                     if (translationValue !== null) {
                         keyData.locales.push({
                             locale,
@@ -60,7 +50,6 @@ class SidebarService {
                     }
                 }
 
-                // Only add keys that have at least one translation
                 if (keyData.locales.length > 0) {
                     translationData.push(keyData);
                 }
@@ -94,7 +83,6 @@ class SidebarService {
         try {
             const translationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, locale);
             
-            // Check if file exists
             try {
                 await fsPromises.access(translationPath);
             } catch (err) {
@@ -105,11 +93,9 @@ class SidebarService {
                 return;
             }
 
-            // Open the file
             const document = await vscode.workspace.openTextDocument(translationPath);
             const editor = await vscode.window.showTextDocument(document);
 
-            // Find the key in the file and navigate to it
             await this.navigateToKey(editor, key);
 
         } catch (error) {
@@ -118,7 +104,7 @@ class SidebarService {
         }
     }
 
-        /**
+    /**
      * Navigate to a specific key in the translation file and highlight its value (supports nested keys)
      * @param {vscode.TextEditor} editor The text editor
      * @param {string} key The key to find (can be nested like "login.inputs.email")
@@ -127,51 +113,34 @@ class SidebarService {
     async navigateToKey(editor, key) {
         try {
             const document = editor.document;
-            
-            // Get workspace folder to determine locale from file path
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-            if (!workspaceFolder) {
-                vscode.window.showErrorMessage('Cannot determine workspace folder');
+
+            let translations;
+            try {
+                translations = JSON.parse(document.getText());
+            } catch {
+                vscode.window.showWarningMessage('Translation file contains invalid JSON');
                 return;
             }
 
-            const workspacePath = workspaceFolder.uri.fsPath;
-            const filePath = document.uri.fsPath;
-            
-            // Determine locale from file path
-            const fileName = path.basename(filePath, '.json');
-            const locale = fileName; // Assuming file name is the locale
-            
-            // Use existing TranslationService to load and process the translation
-            const translations = await this.translationService.loadTranslationsForLocale(workspacePath, locale);
-            if (!translations) {
-                vscode.window.showWarningMessage(`Could not load translations for locale: ${locale}`);
-                return;
-            }
-            
-            // Use existing getTranslation method to get the processed value (handles both simple and complex)
             const translationValue = this.translationService.getTranslation(translations, key);
             if (translationValue == null) {
                 vscode.window.showWarningMessage(`Key "${key}" not found in translation file`);
                 return;
             }
-            
-            // Remove the asterisk if present (added by complex structure processing)
-            const searchValue = translationValue.endsWith('*') ? 
+
+            const searchValue = translationValue.endsWith('*') ?
                 translationValue.slice(0, -1) : translationValue;
-            
-            // Try to navigate to the value first
+
             if (await this.navigateToValue(editor, searchValue)) {
                 console.log(`🎯 Navigated to key "${key}" (value: "${searchValue}") in ${document.fileName}`);
                 return;
             }
-            
-            // Fallback: navigate to the key itself
+
             if (await this.navigateToKeyName(editor, key)) {
                 console.log(`🎯 Navigated to key "${key}" (key location) in ${document.fileName}`);
                 return;
             }
-            
+
             vscode.window.showWarningMessage(`Key "${key}" not found in translation file`);
 
         } catch (error) {
@@ -198,7 +167,6 @@ class SidebarService {
             const match = valueRegex.exec(text);
             
             if (match) {
-                // Highlight the value (without quotes)
                 const valueStart = match.index + 1; // Skip opening quote
                 const valueEnd = valueStart + value.length;
                 
@@ -272,25 +240,20 @@ class SidebarService {
             const workspacePath = workspaceFolder.uri.fsPath;
             const filePath = document.uri.fsPath;
             
-            // Get the path pattern for translation files
             const pathPattern = await this.localeService.getTranslationPathPatternAsync(workspacePath);
             const relativePath = path.relative(workspacePath, filePath);
             
-            // Normalize paths for comparison (handle Windows paths)
             const normalizedRelativePath = relativePath.replace(/\\/g, '/');
             
-            // Use the actual available locales from configuration instead of hardcoding
             const availableLocales = await this.localeService.getAvailableLocales(workspacePath);
             
             for (const locale of availableLocales) {
                 let expectedPath = pathPattern.replace('{locale}', locale);
                 
-                // Handle different path formats
                 if (expectedPath.startsWith('./')) {
                     expectedPath = expectedPath.substring(2);
                 }
                 
-                // Normalize expected path
                 expectedPath = expectedPath.replace(/\\/g, '/');
                 
                 if (normalizedRelativePath === expectedPath) {
@@ -307,4 +270,4 @@ class SidebarService {
     }
 }
 
-module.exports = { SidebarService }; 
+module.exports = { SidebarService };

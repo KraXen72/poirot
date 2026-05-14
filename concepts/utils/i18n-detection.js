@@ -2,11 +2,6 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
-const { TranslationService } = require('../translation/service');
-const { LocaleService } = require('../locale/service');
-
-const localeService = new LocaleService();
-const translationService = new TranslationService();
 
 /**
  * @typedef {{ locales?: string[], baseLocale?: string, [key: string]: unknown }} InlangSettings
@@ -16,19 +11,21 @@ const translationService = new TranslationService();
 /**
  * @param {import('vscode').TextDocument} document
  * @param {import('vscode').Position} position
+ * @param {object} translationService
  * @returns {string | null}
  */
-function getKeyAtPosition(document, position) {
-    const call = getTranslationCallAtPosition(document, position);
+function getKeyAtPosition(document, position, translationService) {
+    const call = getTranslationCallAtPosition(document, position, translationService);
     return call ? call.methodName : null;
 }
 
 /**
  * @param {import('vscode').TextDocument} document
  * @param {import('vscode').Position} position
+ * @param {object} translationService
  * @returns {TranslationCall | null}
  */
-function getTranslationCallAtPosition(document, position) {
+function getTranslationCallAtPosition(document, position, translationService) {
     const line = document.lineAt(position.line).text;
 
     /** @type {TranslationCall[]} */
@@ -47,10 +44,11 @@ function getTranslationCallAtPosition(document, position) {
 /**
  * @param {import('vscode').TextDocument} document
  * @param {import('vscode').Position} position
+ * @param {object} translationService
  * @returns {import('vscode').Range}
  */
-function getKeyRangeAtPosition(document, position) {
-    const call = getTranslationCallAtPosition(document, position);
+function getKeyRangeAtPosition(document, position, translationService) {
+    const call = getTranslationCallAtPosition(document, position, translationService);
     if (!call) {
         return document.getWordRangeAtPosition(position) ?? new vscode.Range(position, position);
     }
@@ -120,9 +118,10 @@ function getProjectRoot(document) {
 
 /**
  * @param {string} projectRoot
+ * @param {object} localeService
  * @returns {Promise<string[]>}
  */
-async function getLocaleFilePaths(projectRoot) {
+async function getLocaleFilePaths(projectRoot, localeService) {
     return localeService.getLocaleFilePaths(projectRoot);
 }
 

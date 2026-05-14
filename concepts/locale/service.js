@@ -1,10 +1,9 @@
 const vscode = require('vscode');
-const fs = require('fs');
 const fsPromises = require('fs/promises');
 const path = require('path');
 
 class LocaleService {
-    getCurrentLocale() {
+    async getCurrentLocale() {
         const config = vscode.workspace.getConfiguration('elementaryWatson');
         const configLocale = config.get('defaultLocale');
         if (configLocale) {
@@ -12,31 +11,13 @@ class LocaleService {
         }
 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-            const inlangSettings = this.loadInlangSettings(vscode.workspace.workspaceFolders[0].uri.fsPath);
+            const inlangSettings = await this.loadInlangSettingsAsync(vscode.workspace.workspaceFolders[0].uri.fsPath);
             if (inlangSettings && inlangSettings.baseLocale) {
                 return inlangSettings.baseLocale;
             }
         }
 
         return 'en';
-    }
-
-    loadInlangSettings(workspacePath) {
-        try {
-            const inlangSettingsPath = path.join(workspacePath, 'project.inlang', 'settings.json');
-            if (!fs.existsSync(inlangSettingsPath)) {
-                console.log(`📝 No inlang settings found at: ${inlangSettingsPath}`);
-                return null;
-            }
-
-            const fileContent = fs.readFileSync(inlangSettingsPath, 'utf8');
-            const settings = JSON.parse(fileContent);
-            console.log(`📖 Loaded inlang settings from: ${path.basename(inlangSettingsPath)}`);
-            return settings;
-        } catch (error) {
-            console.log(`❌ Failed to load inlang settings: ${error.message}`);
-            return null;
-        }
     }
 
     async loadInlangSettingsAsync(workspacePath) {
@@ -52,17 +33,6 @@ class LocaleService {
             }
             return null;
         }
-    }
-
-    getTranslationPathPattern(workspacePath) {
-        const inlangSettings = this.loadInlangSettings(workspacePath);
-        if (inlangSettings &&
-            inlangSettings['plugin.inlang.messageFormat'] &&
-            inlangSettings['plugin.inlang.messageFormat'].pathPattern) {
-            return inlangSettings['plugin.inlang.messageFormat'].pathPattern;
-        }
-
-        return './messages/{locale}.json';
     }
 
     async getTranslationPathPatternAsync(workspacePath) {
@@ -85,11 +55,6 @@ class LocaleService {
             return path.join(workspacePath, relativePath.substring(1));
         }
         return path.join(workspacePath, relativePath);
-    }
-
-    resolveTranslationPath(workspacePath, locale) {
-        const pathPattern = this.getTranslationPathPattern(workspacePath);
-        return this._normalizePath(workspacePath, pathPattern, locale);
     }
 
     async resolveTranslationPathAsync(workspacePath, locale) {

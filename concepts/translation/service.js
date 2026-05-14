@@ -1,5 +1,6 @@
 const { TranslationRepository } = require('./repository');
 const { LocaleService } = require('../locale/service');
+const { getNestedValue } = require('../utils/json-utils');
 
 /**
  * Service for processing translation calls and coordinating translation loading
@@ -72,25 +73,21 @@ class TranslationService {
      */
     processParaglideVariant(variantArray) {
         try {
-            // Get the first element of the array
             if (!Array.isArray(variantArray) || variantArray.length === 0) {
                 return null;
             }
 
             const firstVariant = variantArray[0];
             
-            // Check if it has the expected structure with a match property
             if (!firstVariant || typeof firstVariant !== 'object' || !firstVariant.match) {
                 return null;
             }
 
-            // Get the first value from the match object
             const matchValues = Object.values(firstVariant.match);
             if (matchValues.length === 0) {
                 return null;
             }
 
-            // Return the first match value
             return matchValues[0];
         } catch (error) {
             console.error('Error processing paraglide variant:', error);
@@ -111,11 +108,9 @@ class TranslationService {
 
         let value;
         
-        // Try nested key lookup first (e.g., "login.inputs.email")
         if (key.includes('.')) {
-            value = this.getNestedValue(translations, key);
+            value = getNestedValue(translations, key.split('.'));
         } else {
-            // Fallback to flat key lookup for backward compatibility
             value = translations[key];
         }
         
@@ -123,12 +118,10 @@ class TranslationService {
             return null;
         }
 
-        // Case 1: Simple string value - return as-is
         if (typeof value === 'string') {
             return value;
         }
 
-        // Case 2: Paraglide variant array - process and add asterisk
         if (Array.isArray(value)) {
             const variantValue = this.processParaglideVariant(value);
             if (variantValue) {
@@ -136,20 +129,7 @@ class TranslationService {
             }
         }
 
-        // Case 3: Unsupported format
         return null;
-    }
-
-    /**
-     * Get nested value from object using dot notation
-     * @param {Object} obj The object to traverse
-     * @param {string} path The dot-separated path (e.g., "login.inputs.email")
-     * @returns {any} The value at the path or undefined if not found
-     */
-    getNestedValue(obj, path) {
-        return path.split('.').reduce((current, key) => {
-            return (current && current[key] !== undefined) ? current[key] : undefined;
-        }, obj);
     }
 
     /**
@@ -163,7 +143,6 @@ class TranslationService {
         try {
             const availableLocales = await this.localeService.getAvailableLocales(workspacePath);
             
-            // Search through all locales except the current one
             for (const locale of availableLocales) {
                 if (locale === currentLocale) continue;
                 
@@ -201,18 +180,15 @@ class TranslationService {
             const currentTranslation = this.getTranslation(translations, call.methodName);
             
             if (currentTranslation) {
-                // Translation found in current locale - normal case
                 results.push({
                     ...call,
                     translationValue: currentTranslation,
                     warningType: null
                 });
             } else {
-                // Translation missing in current locale - search other locales
                 const searchResult = await this.searchKeyInAllLocales(workspacePath, call.methodName, currentLocale);
                 
                 if (searchResult) {
-                    // Found in other locale(s) - show yellow warning
                     results.push({
                         ...call,
                         translationValue: searchResult.translation,
@@ -220,7 +196,6 @@ class TranslationService {
                         foundInLocale: searchResult.locale
                     });
                 } else {
-                    // Not found in any locale - show red error
                     results.push({
                         ...call,
                         translationValue: null,
@@ -256,4 +231,4 @@ class TranslationService {
     }
 }
 
-module.exports = { TranslationService }; 
+module.exports = { TranslationService };

@@ -31,22 +31,23 @@ function validateRenameKey(newKey) {
  * @param {string} oldKey
  * @param {string} newKey
  * @param {object} translationService         Must expose `findTranslationCalls(text)`.
+ * @param {object} localeService              Must expose `getLocaleFilePaths(projectRoot)`.
  * @returns {Promise<void>}  Rejects with a user-facing Error on any problem.
  */
-async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translationService) {
+async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translationService, localeService) {
     if (oldKey === newKey) return;
 
     const projectRoot = getProjectRoot(activeDocument);
     if (!projectRoot) throw new Error('Could not find inlang project root for this file.');
 
-    await _renameInLocaleFiles(projectRoot, oldKey, newKey);
+    await _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService);
     await _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService);
 }
 
 // ── locale files ─────────────────────────────────────────────────────────────
 
-async function _renameInLocaleFiles(projectRoot, oldKey, newKey) {
-    const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey);
+async function _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService) {
+    const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey, localeService);
     await Promise.all(
         localeFiles
             .filter(lf => lf.hasOldKey)
@@ -58,8 +59,8 @@ async function _renameInLocaleFiles(projectRoot, oldKey, newKey) {
     );
 }
 
-async function _loadLocaleFiles(projectRoot, oldKey, newKey) {
-    const localePaths = await getLocaleFilePaths(projectRoot);
+async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
+    const localePaths = await getLocaleFilePaths(projectRoot, localeService);
     const files = [];
     for (const filePath of localePaths) {
         const raw = await _readText(filePath);
@@ -213,4 +214,14 @@ function _isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
 }
 
-module.exports = { buildRenameEdit, validateRenameKey };
+/**
+ * Minimal rename provider class; exists so test/extension.test.js can require it.
+ */
+class TranslationKeyRenameProvider {
+    constructor(translationService, onBeforeRename) {
+        this.translationService = translationService;
+        this.onBeforeRename = onBeforeRename;
+    }
+}
+
+module.exports = { buildRenameEdit, validateRenameKey, TranslationKeyRenameProvider };
