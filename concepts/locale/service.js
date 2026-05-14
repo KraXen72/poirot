@@ -45,7 +45,9 @@ class LocaleService {
             const fileContent = await fsPromises.readFile(inlangSettingsPath, 'utf8');
             return JSON.parse(fileContent);
         } catch (error) {
-            if (error.code !== 'ENOENT') {
+            if (error.code === 'ENOENT') {
+                console.log(`📝 No inlang settings found at: ${path.join(workspacePath, 'project.inlang', 'settings.json')}`);
+            } else {
                 console.log(`❌ Failed to load inlang settings: ${error.message}`);
             }
             return null;
@@ -74,34 +76,25 @@ class LocaleService {
         return './messages/{locale}.json';
     }
 
-    resolveTranslationPath(workspacePath, locale) {
-        const pathPattern = this.getTranslationPathPattern(workspacePath);
+    _normalizePath(workspacePath, pathPattern, locale) {
         const relativePath = pathPattern.replace('{locale}', locale);
-
         if (relativePath.startsWith('./')) {
             return path.join(workspacePath, relativePath.substring(2));
         }
-
         if (relativePath.startsWith('/')) {
             return path.join(workspacePath, relativePath.substring(1));
         }
-
         return path.join(workspacePath, relativePath);
+    }
+
+    resolveTranslationPath(workspacePath, locale) {
+        const pathPattern = this.getTranslationPathPattern(workspacePath);
+        return this._normalizePath(workspacePath, pathPattern, locale);
     }
 
     async resolveTranslationPathAsync(workspacePath, locale) {
         const pathPattern = await this.getTranslationPathPatternAsync(workspacePath);
-        const relativePath = pathPattern.replace('{locale}', locale);
-
-        if (relativePath.startsWith('./')) {
-            return path.join(workspacePath, relativePath.substring(2));
-        }
-
-        if (relativePath.startsWith('/')) {
-            return path.join(workspacePath, relativePath.substring(1));
-        }
-
-        return path.join(workspacePath, relativePath);
+        return this._normalizePath(workspacePath, pathPattern, locale);
     }
 
     async getAvailableLocales(workspacePath) {
@@ -129,19 +122,18 @@ class LocaleService {
 
     async getLocaleFilePaths(workspacePath) {
         const locales = await this.getAvailableLocales(workspacePath);
-        const paths = [];
-
-        for (const locale of locales) {
-            const translationPath = await this.resolveTranslationPathAsync(workspacePath, locale);
-            try {
-                await fsPromises.access(translationPath);
-                paths.push(translationPath);
-            } catch {
-                // Skip missing files.
-            }
-        }
-
-        return paths;
+        const results = await Promise.all(
+            locales.map(async (locale) => {
+                const translationPath = await this.resolveTranslationPathAsync(workspacePath, locale);
+                try {
+                    await fsPromises.access(translationPath);
+                    return translationPath;
+                } catch {
+                    return null;
+                }
+            })
+        );
+        return results.filter(p => p !== null);
     }
 
     async updateLocale(locale) {

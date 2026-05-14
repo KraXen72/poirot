@@ -13,6 +13,9 @@ const KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
 
 class TranslationKeyRenameProvider {
     constructor(translationService) {
+        if (!translationService) {
+            throw new Error('TranslationKeyRenameProvider requires translationService');
+        }
         this.translationService = translationService;
     }
 

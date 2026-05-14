@@ -325,7 +325,7 @@ class ExtensionActivator {
             });
 
             // Filter only new values, for old value we dont need to do anything
-            if (newValue !== undefined && newValue != translationValue) {
+            if (newValue !== undefined && newValue !== translationValue) {
                 const success = await this.extractionService.createNewBinding(editor, document, selection, newValue);
                 if (success) {
                     vscode.window.showInformationMessage('New binding created successfully');
@@ -411,12 +411,15 @@ class ExtensionActivator {
             const availableLocales = await this.sidebarService.getAvailableLocales(workspacePath);
             
             // Resolve all translation paths asynchronously
-            const localePaths = await Promise.all(
+            const settledPaths = await Promise.allSettled(
                 availableLocales.map(locale =>
                     this.localeService.resolveTranslationPathAsync(workspacePath, locale)
                         .then(translationPath => ({ locale, translationPath }))
                 )
             );
+            const localePaths = settledPaths
+                .filter(r => r.status === 'fulfilled')
+                .map(r => r.value);
             
             // Create file watchers for each locale
             for (const { locale, translationPath } of localePaths) {

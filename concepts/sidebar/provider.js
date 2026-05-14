@@ -6,6 +6,9 @@ const path = require('path');
  */
 class SidebarTreeProvider {
     constructor(sidebarService, localeService, translationService) {
+        if (!localeService || !translationService) {
+            throw new Error('SidebarTreeProvider requires localeService and translationService');
+        }
         this.sidebarService = sidebarService;
         this.localeService = localeService;
         this.translationService = translationService;
@@ -120,7 +123,12 @@ class SidebarTreeProvider {
             const workspacePath = workspaceFolder.uri.fsPath;
             
             // Load current locale translations
-            const currentTranslations = await this.translationService.loadTranslationsForLocale(workspacePath, currentLocale);
+            let currentTranslations = null;
+            try {
+                currentTranslations = await this.translationService.loadTranslationsForLocale(workspacePath, currentLocale);
+            } catch (error) {
+                console.error('Failed to load translations:', error);
+            }
             
             // Return translation keys with current locale values
             return this.translationData.map(keyData => {

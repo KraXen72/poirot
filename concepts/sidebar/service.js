@@ -8,6 +8,9 @@ const { findKeyLine } = require('../utils/json-utils');
  */
 class SidebarService {
     constructor(translationService, localeService) {
+        if (!translationService || !localeService) {
+            throw new Error('SidebarService requires translationService and localeService');
+        }
         this.translationService = translationService;
         this.localeService = localeService;
     }
@@ -94,8 +97,11 @@ class SidebarService {
             // Check if file exists
             try {
                 await fsPromises.access(translationPath);
-            } catch {
-                vscode.window.showErrorMessage(`Translation file not found: ${translationPath}`);
+            } catch (err) {
+                const msg = err.code === 'ENOENT'
+                    ? `Translation file not found: ${translationPath}`
+                    : `Cannot access translation file: ${translationPath} (${err.message})`;
+                vscode.window.showErrorMessage(msg);
                 return;
             }
 

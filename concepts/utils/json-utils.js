@@ -1,4 +1,7 @@
 function deepClone(value) {
+    if (typeof structuredClone === 'function') {
+        return structuredClone(value);
+    }
     return JSON.parse(JSON.stringify(value));
 }
 
@@ -14,7 +17,7 @@ function getNestedValue(obj, segments) {
 
 function setNestedValue(obj, segments, value) {
     if (segments.length === 0) {
-        return value;
+        throw new Error('setNestedValue: segments must not be empty');
     }
 
     let current = obj;

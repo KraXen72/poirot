@@ -134,7 +134,7 @@ class ExtractionService {
                 await this.addToLocaleFiles(workspacePath, newKey, value, inlangSettings);
 
                 // Abort if the document was externally modified during async work
-                if (document.isDirty && document.version !== capturedVersion) {
+                if (document.version !== capturedVersion) {
                     vscode.window.showWarningMessage(
                         'ElementaryWatson: Document was edited during extraction. Locale files were written — please replace the selected text manually with: ' +
                         formatKeyCall(newKey, interpolationType)

@@ -16,7 +16,13 @@ class TranslationRepository {
             console.log(`📖 Reading translations from: ${path.basename(translationFilePath)} (locale: ${locale})`);
 
             const fileContent = await fsPromises.readFile(translationFilePath, 'utf8');
-            const translations = JSON.parse(fileContent);
+            let translations;
+            try {
+                translations = JSON.parse(fileContent);
+            } catch {
+                console.log(`❌ Invalid JSON in translation file: ${translationFilePath}`);
+                return null;
+            }
             
             console.log(`✅ Loaded ${Object.keys(translations).length} translations for locale '${locale}'`);
             
