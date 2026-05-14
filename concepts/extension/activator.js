@@ -266,12 +266,12 @@ class ExtensionActivator {
             }
         });
 
-        const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection(async (event) => {
+        const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection((event) => {
             const onCall = this.editorService.getCodeLensProvider().isPositionOnI18nCall(
                 event.textEditor.document,
                 event.selections[0].active
             );
-            await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', onCall);
+            vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', onCall);
         });
 
         const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
@@ -384,7 +384,7 @@ class ExtensionActivator {
             if (this.editorService.isSupportedDocument(document)) {
                 await this.editorService.processDocument(document);
                 await this.sidebarTreeProvider.refresh(document);
-                await vscode.commands.executeCommand(
+                vscode.commands.executeCommand(
                     'setContext',
                     'elementaryWatson.isCursorOnI18nCall',
                     this.editorService.getCodeLensProvider().isPositionOnI18nCall(document, vscode.window.activeTextEditor.selection.active)
@@ -392,7 +392,7 @@ class ExtensionActivator {
             }
         } else {
             await this.sidebarTreeProvider.refresh(null);
-            await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
+            vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
         }
     }
 
