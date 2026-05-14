@@ -58,10 +58,13 @@ class TranslationKeyRenameProvider {
             return Promise.reject(new Error('Could not find inlang project root for this file.'));
         }
 
+        // Suppress watcher/save/change event handlers BEFORE building the edit,
+        // so that no handler fires during WorkspaceEdit application.
+        if (this.onBeforeRename) this.onBeforeRename(1500);
+
         const edit = new vscode.WorkspaceEdit();
         await renameInLocaleFiles(edit, projectRoot, oldKey, newName);
         await renameInSourceFiles(edit, projectRoot, oldKey, newName, this.translationService);
-        if (this.onBeforeRename) this.onBeforeRename(500);
         return edit;
     }
 }
@@ -175,6 +178,10 @@ async function renameInSourceFiles(edit, projectRoot, oldKey, newKey, translatio
     );
 
     for (const fileUri of files) {
+        if (fileUri.fsPath.includes('/paraglide/') || fileUri.fsPath.includes('\\paraglide\\')) {
+            continue;
+        }
+
         const document = await vscode.workspace.openTextDocument(fileUri);
         const text = document.getText();
 
@@ -211,7 +218,7 @@ function buildSourceEdit(document, call, text, newKey) {
     }
 
     const matchText = text.slice(call.start, call.end);
-    const nestedMatch = /\bm\[(["'`])([^"'`]+)\1\]\s*\(/.exec(matchText);
+    const nestedMatch = /\bm\[(['"`])([^'"]+)\1\]\s*\(/.exec(matchText);
     if (!nestedMatch) {
         return {
             range: new vscode.Range(document.positionAt(call.start), document.positionAt(call.end)),

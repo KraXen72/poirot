@@ -10,9 +10,6 @@
 		"ghcr.io/kraxen72/devcontainer-features/copilot-cli:1": { "version": "latest", "autoUpdate": true },
 		"ghcr.io/kraxen72/devcontainer-features/ssh-zed:2": {}
 	},
-	"mounts": [
-		"source=${localEnv:HOME}/.copilot,target=/home/vscode/.copilot,type=bind,Z"
-	],
 	"runArgs":[
 		"--publish=${localEnv:DCMAN_SSH_PORT}:2222",
 		"--cap-drop=ALL",

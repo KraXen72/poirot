@@ -121,7 +121,8 @@
   "scripts": {
     "lint": "eslint .",
     "pretest": "npm run lint",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "lint-tsc": "tsc -noEmit -skipLibCheck"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
