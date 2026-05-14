@@ -18,6 +18,7 @@ class EditorDecorator {
             this.translationDecorationType = vscode.window.createTextEditorDecorationType({
                 after: {
                     margin: '0 0 0 1em',
+                    color: '#888888',
                     fontStyle: 'italic'
                 },
                 rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed
@@ -39,14 +40,17 @@ class EditorDecorator {
             let contentText, color, borderColor;
             
             if (result.warningType === 'noLocale') {
+                // Red alert for no locale defined
                 contentText = 'No locale defined';
                 color = '#cc6666';
                 borderColor = '#cc6666';
             } else if (result.warningType === 'missingLocale') {
+                // Yellow warning + translation from other locale
                 contentText = `"${result.translationValue}" (locales missing)`;
                 color = '#d4a574';
                 borderColor = '#d4a574';
             } else {
+                // Normal case - translation found in current locale
                 contentText = `"${result.translationValue}"`;
                 color = '#888888';
                 borderColor = '#888888';
@@ -124,4 +128,4 @@ class EditorDecorator {
     }
 }
 
-module.exports = { EditorDecorator };
+module.exports = { EditorDecorator }; 
