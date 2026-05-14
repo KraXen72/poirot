@@ -95,6 +95,11 @@
         "category": "ElementaryWatson"
       },
       {
+        "command": "elementaryWatson.inspectTranslation",
+        "title": "Inspect Translation",
+        "category": "ElementaryWatson"
+      },
+      {
         "command": "elementaryWatson.extractText",
         "title": "Extract Text to Locale",
         "category": "ElementaryWatson"
@@ -103,6 +108,13 @@
         "command": "elementaryWatson.openTranslationFile",
         "title": "Open Translation File",
         "icon": "$(target)"
+      }
+    ],
+    "editor/context": [
+      {
+        "command": "elementaryWatson.inspectTranslation",
+        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
+        "group": "navigation"
       }
     ]
   },

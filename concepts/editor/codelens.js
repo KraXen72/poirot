@@ -39,6 +39,38 @@ class TranslationCodeLensProvider {
     }
 
     /**
+     * Get the translation result at a given position.
+     * @param {vscode.TextDocument} document The document
+     * @param {vscode.Position} position The cursor position
+     * @returns {Object|null}
+     */
+    getTranslationResultAtPosition(document, position) {
+        if (!this.document || document.uri.toString() !== this.document.uri.toString()) {
+            return null;
+        }
+
+        const offset = document.offsetAt(position);
+
+        for (const result of this.translationResults) {
+            if (offset >= result.start && offset <= result.end) {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Check whether a position is on an i18n call.
+     * @param {vscode.TextDocument} document The document
+     * @param {vscode.Position} position The cursor position
+     * @returns {boolean}
+     */
+    isPositionOnI18nCall(document, position) {
+        return !!this.getTranslationResultAtPosition(document, position);
+    }
+
+    /**
      * Provide CodeLens items for translation calls
      * @param {vscode.TextDocument} document The document
      * @returns {Array<vscode.CodeLens>} Array of CodeLens items

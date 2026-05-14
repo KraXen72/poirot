@@ -114,6 +114,9 @@ class ExtensionActivator {
         // Register the change locale command
         this.registerChangeLocaleCommand();
 
+        // Register inspect translation command
+        this.registerInspectTranslationCommand();
+
         // Register the extract text command
         this.registerExtractTextCommand();
 
@@ -204,6 +207,62 @@ class ExtensionActivator {
     }
 
     /**
+     * Inspect the translation for a key in a file.
+     * @param {string} translationKey
+     * @param {string} filePath
+     */
+    async inspectTranslation(translationKey, filePath) {
+        // Show the sidebar
+        await vscode.commands.executeCommand('workbench.view.extension.elementaryWatson');
+
+        // Get the workspace folder to find the current locale
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage('Cannot determine workspace folder');
+            return;
+        }
+
+        const workspacePath = workspaceFolder.uri.fsPath;
+        const currentLocale = this.localeService.getCurrentLocale();
+
+        // Refresh sidebar with current document to ensure it shows the clicked key
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && activeEditor.document.uri.fsPath === filePath) {
+            await this.sidebarTreeProvider.refresh(activeEditor.document, true);
+        }
+
+        // Open the translation file for the current locale and navigate to the key
+        await this.sidebarService.openTranslationFile(workspacePath, currentLocale, translationKey);
+
+        console.log(`🎯 Clicked translation label: ${translationKey} (locale: ${currentLocale})`);
+    }
+
+    /**
+     * Register the inspect translation command
+     */
+    registerInspectTranslationCommand() {
+        const inspectTranslationCommand = vscode.commands.registerCommand('elementaryWatson.inspectTranslation', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) {
+                return;
+            }
+
+            const result = this.editorService.getCodeLensProvider().getTranslationResultAtPosition(
+                editor.document,
+                editor.selection.active
+            );
+
+            if (!result) {
+                return;
+            }
+
+            await this.inspectTranslation(result.methodName, editor.document.uri.fsPath);
+        });
+
+        this.disposables.push(inspectTranslationCommand);
+    }
+
+    /**
      * Register the extract text command
      */
     registerExtractTextCommand() {
@@ -274,30 +333,7 @@ class ExtensionActivator {
         const clickLabelCommand = vscode.commands.registerCommand('elementaryWatson.clickTranslationLabel', 
             async (translationKey, filePath) => {
                 try {
-                    // Show the sidebar
-                    await vscode.commands.executeCommand('workbench.view.extension.elementaryWatson');
-                    
-                    // Get the workspace folder to find the current locale
-                    const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
-                    if (!workspaceFolder) {
-                        vscode.window.showErrorMessage('Cannot determine workspace folder');
-                        return;
-                    }
-
-                    const workspacePath = workspaceFolder.uri.fsPath;
-                    const currentLocale = this.localeService.getCurrentLocale();
-                    
-                    // Refresh sidebar with current document to ensure it shows the clicked key
-                    const activeEditor = vscode.window.activeTextEditor;
-                    if (activeEditor && activeEditor.document.uri.fsPath === filePath) {
-                        await this.sidebarTreeProvider.refresh(activeEditor.document, true);
-                    }
-
-                    // Open the translation file for the current locale and navigate to the key
-                    await this.sidebarService.openTranslationFile(workspacePath, currentLocale, translationKey);
-                    
-                    console.log(`🎯 Clicked translation label: ${translationKey} (locale: ${currentLocale})`);
-                    
+                    await this.inspectTranslation(translationKey, filePath);
                 } catch (error) {
                     console.error('Error handling translation label click:', error);
                     vscode.window.showErrorMessage(`Failed to navigate to translation: ${error.message}`);
@@ -472,14 +508,29 @@ class ExtensionActivator {
                 
                 // Refresh sidebar for the new active document (don't force if it's a translation file)
                 await this.sidebarTreeProvider.refresh(editor.document);
+                await vscode.commands.executeCommand(
+                    'setContext',
+                    'elementaryWatson.isCursorOnI18nCall',
+                    this.editorService.getCodeLensProvider().isPositionOnI18nCall(editor.document, editor.selection.active)
+                );
             } else if (editor && await this.sidebarService.isTranslationFile(editor.document)) {
                 // Don't clear sidebar when switching to translation files - preserve context
                 // Call refresh to update UI with preserved data, but don't force update
                 await this.sidebarTreeProvider.refresh(editor.document);
+                await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
             } else {
                 // Clear sidebar if no supported document is active and it's not a translation file
                 await this.sidebarTreeProvider.refresh(null);
+                await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
             }
+        });
+
+        const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection(async (event) => {
+            const onCall = this.editorService.getCodeLensProvider().isPositionOnI18nCall(
+                event.textEditor.document,
+                event.selections[0].active
+            );
+            await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', onCall);
         });
 
         // Listen for document content changes (new!)
@@ -562,7 +613,7 @@ class ExtensionActivator {
             await this.setupTranslationFileWatchers();
         });
 
-        this.disposables.push(saveDisposable, editorChangeDisposable, documentChangeDisposable, configChangeDisposable, workspaceFoldersChangeDisposable);
+        this.disposables.push(saveDisposable, editorChangeDisposable, selectionChangeDisposable, documentChangeDisposable, configChangeDisposable, workspaceFoldersChangeDisposable);
     }
 
     /**
@@ -577,10 +628,16 @@ class ExtensionActivator {
                 
                 // Refresh sidebar for the active document
                 await this.sidebarTreeProvider.refresh(document);
+                await vscode.commands.executeCommand(
+                    'setContext',
+                    'elementaryWatson.isCursorOnI18nCall',
+                    this.editorService.getCodeLensProvider().isPositionOnI18nCall(document, vscode.window.activeTextEditor.selection.active)
+                );
             }
         } else {
             // Clear sidebar if no active editor
             await this.sidebarTreeProvider.refresh(null);
+            await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
         }
     }
 
