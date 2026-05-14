@@ -21,35 +21,41 @@ function validateRenameKey(newKey) {
 }
 
 /**
- * Builds a WorkspaceEdit that renames `oldKey` → `newKey` across all locale
- * files and source files in the project rooted at the document's workspace.
+ * Renames `oldKey` → `newKey` across all locale files and source files by
+ * writing directly to disk. The single exception is `activeDocument`: that
+ * file's edit is added to `edit` (a WorkspaceEdit) so the open buffer stays
+ * consistent and the change is undoable.
  *
- * @param {vscode.WorkspaceEdit} edit  Mutated in-place.
- * @param {vscode.TextDocument} document  The source document the cursor is in.
+ * @param {vscode.WorkspaceEdit} edit         Receives only the active-document edit.
+ * @param {vscode.TextDocument}  activeDocument  The document the cursor is in.
  * @param {string} oldKey
  * @param {string} newKey
- * @param {object} translationService  Must expose `findTranslationCalls(text)`.
+ * @param {object} translationService         Must expose `findTranslationCalls(text)`.
  * @returns {Promise<void>}  Rejects with a user-facing Error on any problem.
  */
-async function buildRenameEdit(edit, document, oldKey, newKey, translationService) {
+async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translationService) {
     if (oldKey === newKey) return;
 
-    const projectRoot = getProjectRoot(document);
+    const projectRoot = getProjectRoot(activeDocument);
     if (!projectRoot) throw new Error('Could not find inlang project root for this file.');
 
-    await _renameInLocaleFiles(edit, projectRoot, oldKey, newKey);
-    await _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService);
+    await _renameInLocaleFiles(projectRoot, oldKey, newKey);
+    await _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService);
 }
 
-// ── private helpers ──────────────────────────────────────────────────────────
+// ── locale files ─────────────────────────────────────────────────────────────
 
-async function _renameInLocaleFiles(edit, projectRoot, oldKey, newKey) {
+async function _renameInLocaleFiles(projectRoot, oldKey, newKey) {
     const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey);
-    for (const lf of localeFiles) {
-        if (!lf.hasOldKey) continue;
-        const updated = renameJsonKey(lf.json, oldKey, newKey);
-        edit.replace(lf.uri, _fullDocumentRange(), stringifyJsonLike(lf.raw, updated));
-    }
+    await Promise.all(
+        localeFiles
+            .filter(lf => lf.hasOldKey)
+            .map(lf => {
+                const updated = renameJsonKey(lf.json, oldKey, newKey);
+                const content = stringifyJsonLike(lf.raw, updated);
+                return vscode.workspace.fs.writeFile(lf.uri, Buffer.from(content, 'utf8'));
+            })
+    );
 }
 
 async function _loadLocaleFiles(projectRoot, oldKey, newKey) {
@@ -69,61 +75,128 @@ async function _loadLocaleFiles(projectRoot, oldKey, newKey) {
         });
     }
     for (const f of files) {
-        if (f.hasNewKey) throw new Error(`Key "${newKey}" already exists in ${path.basename(f.uri.fsPath)}. Rename aborted.`);
+        if (f.hasNewKey) {
+            throw new Error(`Key "${newKey}" already exists in ${path.basename(f.uri.fsPath)}. Rename aborted.`);
+        }
     }
     return files;
 }
 
-async function _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService) {
+// ── source files ──────────────────────────────────────────────────────────────
+
+async function _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService) {
     const files = await vscode.workspace.findFiles(
         new vscode.RelativePattern(projectRoot, '**/*.{ts,js,svelte}'),
         new vscode.RelativePattern(projectRoot, '{node_modules,.git,paraglide}/**'),
     );
-    for (const fileUri of files) {
-        if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) continue;
-        const doc = await vscode.workspace.openTextDocument(fileUri);
-        const text = doc.getText();
-        for (const call of translationService.findTranslationCalls(text)) {
-            if (call.methodName !== oldKey) continue;
-            const src = _buildSourceEdit(doc, call, text, newKey);
-            edit.replace(doc.uri, src.range, src.replacement);
+
+    await Promise.all(files.map(async fileUri => {
+        if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) return;
+
+        const raw = await _readText(fileUri.fsPath);
+        if (raw == null) return;
+
+        const calls = translationService.findTranslationCalls(raw).filter(c => c.methodName === oldKey);
+        if (calls.length === 0) return;
+
+        const isActiveDoc = fileUri.toString() === activeDocument.uri.toString();
+
+        if (isActiveDoc) {
+            // Active document: go through WorkspaceEdit so the open buffer
+            // stays in sync and the edit is undoable.
+            for (const call of calls) {
+                const src = _buildSourceEdit(activeDocument, call, raw, newKey);
+                edit.replace(activeDocument.uri, src.range, src.replacement);
+            }
+        } else {
+            // Not open: apply replacements to the raw string and write to disk.
+            const newContent = _applyReplacementsToText(raw, calls, newKey);
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(newContent, 'utf8'));
         }
-    }
+    }));
 }
 
 /**
+ * Applies all call-site renames to a raw string without touching the editor
+ * model. Processes replacements in reverse order so offsets stay valid.
+ *
+ * @param {string} text
+ * @param {Array<{keyType: string, start: number, end: number, methodName: string}>} calls
+ * @param {string} newKey
+ * @returns {string}
+ */
+function _applyReplacementsToText(text, calls, newKey) {
+    // Sort descending by start offset so each splice doesn't shift later offsets.
+    const sorted = calls.slice().sort((a, b) => b.start - a.start);
+    let result = text;
+    for (const call of sorted) {
+        const { charStart, charEnd, replacement } = _buildCharReplacement(result, call, newKey);
+        result = result.slice(0, charStart) + replacement + result.slice(charEnd);
+    }
+    return result;
+}
+
+/**
+ * Returns the character-offset span and replacement string for a call in raw text.
+ *
+ * @param {string} text
+ * @param {{keyType: string, start: number, end: number, methodName: string}} call
+ * @param {string} newKey
+ * @returns {{ charStart: number, charEnd: number, replacement: string }}
+ */
+function _buildCharReplacement(text, call, newKey) {
+    if (call.keyType === 'flat') {
+        if (newKey.includes('.')) {
+            // m.oldKey()  →  m["newKey"]()  : replace from the dot through end of method name
+            return {
+                charStart: call.start + 1,
+                charEnd:   call.start + 2 + call.methodName.length,
+                replacement: `["${newKey}"]`,
+            };
+        } else {
+            // m.oldKey()  →  m.newKey()  : replace just the method name portion
+            return {
+                charStart: call.start + 2,
+                charEnd:   call.start + 2 + call.methodName.length,
+                replacement: newKey,
+            };
+        }
+    }
+
+    // nested: m["oldKey"]()
+    const matchText = text.slice(call.start, call.end);
+    const nestedMatch = /\["([^\]]+)"\]/.exec(matchText);
+    if (!nestedMatch) {
+        return { charStart: call.start, charEnd: call.end, replacement: newKey };
+    }
+    const keyOffset = matchText.indexOf(nestedMatch[1]);
+    return {
+        charStart: call.start + keyOffset,
+        charEnd:   call.start + keyOffset + nestedMatch[1].length,
+        replacement: newKey,
+    };
+}
+
+/**
+ * Builds a WorkspaceEdit range+replacement for the active (open) document.
+ * Delegates to the same offset logic as _buildCharReplacement but returns
+ * vscode.Range values instead.
+ *
  * @param {vscode.TextDocument} document
- * @param {{ keyType: string, start: number, end: number, methodName: string }} call
+ * @param {{keyType: string, start: number, end: number, methodName: string}} call
  * @param {string} text
  * @param {string} newKey
  * @returns {{ range: vscode.Range, replacement: string }}
  */
 function _buildSourceEdit(document, call, text, newKey) {
-    if (call.keyType === 'flat') {
-        return {
-            range: newKey.includes('.')
-                ? new vscode.Range(document.positionAt(call.start + 1), document.positionAt(call.start + 2 + call.methodName.length))
-                : new vscode.Range(document.positionAt(call.start + 2), document.positionAt(call.start + 2 + call.methodName.length)),
-            replacement: newKey.includes('.') ? `["${newKey}"]` : newKey,
-        };
-    }
-    const matchText = text.slice(call.start, call.end);
-    const nestedMatch = /\["([^\]]+)"\]/.exec(matchText);
-    if (!nestedMatch) {
-        return {
-            range: new vscode.Range(document.positionAt(call.start), document.positionAt(call.end)),
-            replacement: newKey,
-        };
-    }
-    const keyOffset = matchText.indexOf(nestedMatch[2]);
+    const { charStart, charEnd, replacement } = _buildCharReplacement(text, call, newKey);
     return {
-        range: new vscode.Range(
-            document.positionAt(call.start + keyOffset),
-            document.positionAt(call.start + keyOffset + nestedMatch[2].length),
-        ),
-        replacement: newKey,
+        range: new vscode.Range(document.positionAt(charStart), document.positionAt(charEnd)),
+        replacement,
     };
 }
+
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 async function _readText(filePath) {
     try { return await fs.readFile(filePath, 'utf8'); } catch { return null; }
@@ -134,10 +207,6 @@ function _parseJson(raw) {
         const v = JSON.parse(raw);
         return typeof v === 'object' && !Array.isArray(v) ? v : null;
     } catch { return null; }
-}
-
-function _fullDocumentRange() {
-    return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER));
 }
 
 function _isKeyPresent(obj, keyPath) {
