@@ -1,22 +1,25 @@
-// Minimal vscode stub so ExtensionActivator can be constructed in tests.
-const EventEmitterStub = class {
-    constructor() { this.event = () => {}; }
-    fire() {}
-    dispose() {}
-};
+const mock = require('mock-require');
 
-require.cache[require.resolve('vscode')] = {
-    id: 'vscode',
-    filename: 'vscode',
-    loaded: true,
-    exports: {
-        window: { createTextEditorDecorationType: () => ({ dispose() {} }) },
-        EventEmitter: EventEmitterStub,
-        DecorationRangeBehavior: { ClosedClosed: 0 },
-        workspace: { getConfiguration: () => ({ get: () => undefined }) },
-        commands: { executeCommand: async () => {} },
+// Stub the entire vscode module before any code tries to require it
+const vscodeStub = {
+    window: {
+        createTextEditorDecorationType: () => ({ dispose() {} }),
+    },
+    EventEmitter: class {
+        constructor() { this.event = () => {}; }
+        fire() {}
+        dispose() {}
+    },
+    DecorationRangeBehavior: { ClosedClosed: 0 },
+    workspace: {
+        getConfiguration: () => ({ get: () => undefined }),
+    },
+    commands: {
+        executeCommand: async () => {},
     },
 };
+
+mock('vscode', vscodeStub);
 
 const assert = require('assert');
 

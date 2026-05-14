@@ -25,7 +25,7 @@
     "name": "Romer"
   },
   "description": "VS Code extension that displays inline translation values for Paraglide JS i18n method calls in Svelte/SvelteKit applications",
-  "version": "1.5.0",
+  "version": "0.6.0",
   "engines": {
     "vscode": "^1.99.3"
   },
@@ -137,8 +137,9 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "test": "vscode-test",
-    "lint-tsc": "tsc -noEmit -skipLibCheck"
+    "lint-tsc": "tsc -noEmit -skipLibCheck",
+    "pretest": "npm run lint",
+    "test": "vscode-test"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -146,7 +147,8 @@
     "@types/vscode": "^1.99.3",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.25.1"
+    "eslint": "^9.25.1",
+    "mock-require": "^3.0.3"
   },
   "dependencies": {
     "human-id": "^4.1.1"
