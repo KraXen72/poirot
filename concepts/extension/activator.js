@@ -538,7 +538,12 @@ class ExtensionActivator {
             vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
         }
     }
-
+    
+    /**
+     * Inspect translation
+     * @param {string} translationKey
+     * @param {string} filePath
+     */
     async inspectTranslation(translationKey, filePath) {
         await vscode.commands.executeCommand('workbench.view.extension.elementaryWatson');
 

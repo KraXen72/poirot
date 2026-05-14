@@ -7,12 +7,20 @@ const { TranslationService } = require('../translation/service');
 const { deepClone, setNestedValue, stringifyJsonLike } = require('../utils/json-utils');
 const { formatKeyCall } = require('../utils/key-format');
 
+/**
+ * Service for extracting strings and adding them to locale files
+ */
 class ExtractionService {
     constructor(localeService = new LocaleService(), translationService = new TranslationService()) {
         this.localeService = localeService;
         this.translationService = translationService;
     }
 
+    /**
+     * Strip matching quotes from text if present
+     * @param {string} text The text to process
+     * @returns {string} Text with matching outer quotes removed
+     */
     stripMatchingQuotes(text) {
         if (!text || text.length < 2) {
             return text;
@@ -20,6 +28,8 @@ class ExtractionService {
 
         const firstChar = text[0];
         const lastChar = text[text.length - 1];
+        
+        // Check if first and last characters are matching quotes
         if ((firstChar === '"' && lastChar === '"') ||
             (firstChar === "'" && lastChar === "'") ||
             (firstChar === '`' && lastChar === '`')) {
@@ -29,31 +39,38 @@ class ExtractionService {
         return text;
     }
 
-    async extractSelectedText(editor, document, selection) {
+    /**
+     * Extract selected text and add to locale files
+     * @param {vscode.TextEditor} editor The active text editor
+     * @returns {Promise<boolean>} True if extraction was successful
+     */
+    async extractSelectedText(editor) {
         try {
-            if (!editor || !selection || selection.isEmpty) {
+            if (!editor || !editor.selection || editor.selection.isEmpty) {
                 vscode.window.showErrorMessage('Please select text to extract');
                 return false;
             }
 
-            const rawSelectedText = document.getText(selection).trim();
+            const rawSelectedText = editor.document.getText(editor.selection).trim();
             if (!rawSelectedText) {
                 vscode.window.showErrorMessage('Selected text is empty');
                 return false;
             }
 
-            const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+            // Strip matching quotes if present
+            const selectedText = this.stripMatchingQuotes(rawSelectedText);
+
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
             if (!workspaceFolder) {
                 vscode.window.showErrorMessage('No workspace folder found');
                 return false;
             }
 
-            const selectedText = this.stripMatchingQuotes(rawSelectedText);
             return await this._extractAndReplace({
-                document,
-                selection,
+                document: editor.document,
+                selection: editor.selection,
                 value: selectedText,
-                languageId: document.languageId,
+                languageId: editor.document.languageId,
                 workspacePath: workspaceFolder.uri.fsPath,
             });
         } catch (error) {
@@ -63,6 +80,14 @@ class ExtractionService {
         }
     }
 
+    /**
+     * If newValue is not present in locale, then add new binding and replace selection with new key, else replace current key with existing key
+     * @param {vscode.TextEditor} editor The active text editor
+     * @param {vscode.TextEditor['document']} document the active text editor's document
+     * @param {vscode.TextEditor['selection']} selection the active text editor's selection
+     * @param {string} newValue Text to be added as binding
+     * @returns {Promise<boolean>} True if creation was successful
+     */
     async createNewBinding(editor, document, selection, newValue) {
         try {
             if (!editor) {
@@ -90,7 +115,17 @@ class ExtractionService {
             return false;
         }
     }
-
+    /**
+     * Extract text & replace it with the i18n id
+     * @param {{ 
+     *  document: vscode.TextEditor['document'],
+     *  selection: vscode.TextEditor['selection'],
+     *  value: string,
+     *  languageId: string,
+     *  workspacePath: string,
+     *  forcedInterpolationType?: 'code' | 'template' | (string & {}) | null 
+     * }} paramsObj
+     */
     async _extractAndReplace({ document, selection, value, languageId, workspacePath, forcedInterpolationType = null }) {
         return await vscode.window.withProgress(
             {
@@ -151,6 +186,7 @@ class ExtractionService {
     async findExistingTranslation(workspacePath, text, inlangSettings) {
         try {
             const baseLocale = inlangSettings?.baseLocale || 'en';
+            // Check in base locale first
             const baseTranslationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, baseLocale);
             const baseTranslations = await this.loadTranslations(baseTranslationPath);
             if (baseTranslations) {
@@ -164,6 +200,13 @@ class ExtractionService {
         }
     }
 
+    /**
+     * Recursively search for text in translations (supports nested objects)
+     * @param {Object} obj The translations object to search
+     * @param {string} text The text to search for
+     * @param {string} prefix The key prefix for nested objects
+     * @returns {string|null} The found key or null
+     */
     searchInTranslations(obj, text, prefix = '') {
         for (const [key, value] of Object.entries(obj)) {
             const currentKey = prefix ? `${prefix}.${key}` : key;
@@ -183,7 +226,12 @@ class ExtractionService {
         return null;
     }
 
+    /**
+     * Generate a unique human-readable key
+     * @param {Record<string, string>} existingTranslations existing translations
+     */
     async generateUniqueKey(existingTranslations) {
+        // Try to generate unique key up to 10 times
         for (let i = 0; i < 10; i++) {
             const key = humanId({
                 separator: '_',
@@ -197,6 +245,7 @@ class ExtractionService {
             }
         }
 
+            // If we couldn't generate a unique key, add a timestamp
         const key = humanId({
             separator: '_',
             capitalize: false,
@@ -206,17 +255,24 @@ class ExtractionService {
         return `${key}_${Date.now()}`;
     }
 
+    /**
+     * Get user's choice for interpolation type
+     * @param {string} languageId The language ID of the current file
+     * @param {string} [keyName] The actual key name to show in options (optional)
+     * @returns {Promise<string|null>} 'template' for {m.key()}, 'code' for m.key(), or null if cancelled
+     */
     async getUserInterpolationChoice(languageId, keyName = 'key') {
         const isSvelteTemplate = languageId === 'svelte';
+        
         const options = [
             {
                 label: isSvelteTemplate ? `{m.${keyName}()} - For Svelte template (recommended)` : `m.${keyName}() - For JavaScript/TypeScript code (recommended)`,
-                value: isSvelteTemplate ? 'template' : 'code',
+                value: isSvelteTemplate ? 'template' : 'code'
             },
             {
                 label: isSvelteTemplate ? `m.${keyName}() - For JavaScript/TypeScript code` : `{m.${keyName}()} - For Svelte template`,
-                value: isSvelteTemplate ? 'code' : 'template',
-            },
+                value: isSvelteTemplate ? 'code' : 'template'
+            }
         ];
 
         const selected = await vscode.window.showQuickPick(options, {
@@ -226,6 +282,13 @@ class ExtractionService {
         return selected ? selected.value : null;
     }
 
+    /**
+     * Add the new key-value pair to all locale files
+     * @param {string} workspacePath The workspace root path
+     * @param {string} key The translation key
+     * @param {string} value The translation value
+     * @param {{ locales: string[], baseLocale: string, [index: string]: unknown }} inlangSettings inlang settings
+     */
     async addToLocaleFiles(workspacePath, key, value, inlangSettings) {
         const availableLocales = inlangSettings?.locales || ['en'];
         const baseLocale = inlangSettings?.baseLocale || 'en';
@@ -236,7 +299,15 @@ class ExtractionService {
         }));
     }
 
-    async updateLocaleFile(workspacePath, locale, key, value) {
+    /**
+     * Update a specific locale file with new key-value pair (supports nested keys)
+     * @param {string} workspacePath The workspace root path
+     * @param {string} locale The locale to update
+     * @param {string} key The translation key (can be nested like "login.inputs.email")
+     * @param {string} value The translation value
+     * @returns {Promise<void>}
+     */
+     async updateLocaleFile(workspacePath, locale, key, value) {
         const translationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, locale);
         const dir = path.dirname(translationPath);
         await fs.mkdir(dir, { recursive: true });
