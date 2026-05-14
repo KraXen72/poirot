@@ -1,3 +1,23 @@
+// Minimal vscode stub so ExtensionActivator can be constructed in tests.
+const EventEmitterStub = class {
+    constructor() { this.event = () => {}; }
+    fire() {}
+    dispose() {}
+};
+
+require.cache[require.resolve('vscode')] = {
+    id: 'vscode',
+    filename: 'vscode',
+    loaded: true,
+    exports: {
+        window: { createTextEditorDecorationType: () => ({ dispose() {} }) },
+        EventEmitter: EventEmitterStub,
+        DecorationRangeBehavior: { ClosedClosed: 0 },
+        workspace: { getConfiguration: () => ({ get: () => undefined }) },
+        commands: { executeCommand: async () => {} },
+    },
+};
+
 const assert = require('assert');
 
 suite('ExtensionActivator rename tracking', () => {
@@ -73,18 +93,33 @@ suite('ExtensionActivator rename tracking', () => {
     });
 });
 
-suite('TranslationKeyRenameProvider collectEditUris', () => {
-    test('onBeforeRename receives URI list, not a number', async () => {
-        // Minimal smoke test: the callback receives an array of strings.
-        const { TranslationKeyRenameProvider } = require('../concepts/providers/renameProvider');
-        let received = null;
-        const provider = new TranslationKeyRenameProvider(
-            { findTranslationCalls: () => [] },
-            (uris) => { received = uris; }
-        );
-        // provideRenameEdits will fail to find locale files in test env,
-        // but we can at least verify the callback signature by checking
-        // that if it were called it would receive an array.
-        assert.ok(Array.isArray(received) || received === null);
+suite('validateRenameKey', () => {
+    const { validateRenameKey } = require('../concepts/providers/renameProvider');
+
+    test('accepts valid flat keys', () => {
+        assert.strictEqual(validateRenameKey('hello_world'), null);
+        assert.strictEqual(validateRenameKey('my_key_123'), null);
+        assert.strictEqual(validateRenameKey('$valid'), null);
+    });
+
+    test('accepts valid nested keys', () => {
+        assert.strictEqual(validateRenameKey('login.inputs.email'), null);
+        assert.strictEqual(validateRenameKey('a.b.c'), null);
+    });
+
+    test('rejects keys with spaces', () => {
+        assert.ok(typeof validateRenameKey('hello world') === 'string');
+    });
+
+    test('rejects keys starting with a digit', () => {
+        assert.ok(typeof validateRenameKey('1invalid') === 'string');
+    });
+
+    test('rejects keys with hyphens', () => {
+        assert.ok(typeof validateRenameKey('bad-key') === 'string');
+    });
+
+    test('rejects empty string', () => {
+        assert.ok(typeof validateRenameKey('') === 'string');
     });
 });
