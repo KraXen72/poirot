@@ -28,6 +28,24 @@ class ExtensionActivator {
         
         // File watchers for translation files
         this.translationFileWatchers = [];
+        this._suppressWatcherRefresh = false;
+    }
+
+    suppressWatcherRefreshFor(ms) {
+        this._suppressWatcherRefresh = true;
+        setTimeout(async () => {
+            this._suppressWatcherRefresh = false;
+            // Re-process the active editor now that all edits are settled
+            const activeEditor = vscode.window.activeTextEditor;
+            if (activeEditor) {
+                try {
+                    await this.editorService.processDocument(activeEditor.document);
+                    await this.sidebarTreeProvider.refresh(activeEditor.document, false);
+                } catch (err) {
+                    console.error('Error during post-rename refresh:', err);
+                }
+            }
+        }, ms);
     }
 
     /**
@@ -378,7 +396,10 @@ class ExtensionActivator {
      * Register the rename provider
      */
     registerRenameProvider() {
-        const renameProvider = new TranslationKeyRenameProvider(this.translationService);
+        const renameProvider = new TranslationKeyRenameProvider(
+            this.translationService,
+            (ms) => this.suppressWatcherRefreshFor(ms)
+        );
 
         const renameDisposable = vscode.languages.registerRenameProvider(
             [
@@ -464,6 +485,7 @@ class ExtensionActivator {
      * @param {string} locale The locale of the changed file
      */
     async handleTranslationFileChange(locale) {
+        if (this._suppressWatcherRefresh) return;
         try {
             console.log(`🔄 Translation file changed for locale: ${locale}`);
             

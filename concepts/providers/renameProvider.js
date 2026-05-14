@@ -12,11 +12,12 @@ const KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
  */
 
 class TranslationKeyRenameProvider {
-    constructor(translationService) {
+    constructor(translationService, onBeforeRename = null) {
         if (!translationService) {
             throw new Error('TranslationKeyRenameProvider requires translationService');
         }
         this.translationService = translationService;
+        this.onBeforeRename = onBeforeRename;
     }
 
     /**
@@ -60,6 +61,7 @@ class TranslationKeyRenameProvider {
         const edit = new vscode.WorkspaceEdit();
         await renameInLocaleFiles(edit, projectRoot, oldKey, newName);
         await renameInSourceFiles(edit, projectRoot, oldKey, newName, this.translationService);
+        if (this.onBeforeRename) this.onBeforeRename(500);
         return edit;
     }
 }
