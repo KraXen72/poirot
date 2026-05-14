@@ -108,11 +108,28 @@
         "command": "elementaryWatson.openTranslationFile",
         "title": "Open Translation File",
         "icon": "$(target)"
+      },
+      {
+        "command": "elementaryWatson.renameKey",
+        "title": "Rename Translation Key",
+        "category": "ElementaryWatson"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "elementaryWatson.renameKey",
+        "key": "f2",
+        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall"
       }
     ],
     "editor/context": [
       {
         "command": "elementaryWatson.inspectTranslation",
+        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
+        "group": "navigation"
+      },
+      {
+        "command": "elementaryWatson.renameKey",
         "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
         "group": "navigation"
       }

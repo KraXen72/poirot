@@ -1,196 +1,147 @@
+// @ts-check
 /// <reference types="node" />
 const vscode = require('vscode');
 const fs = require('fs/promises');
 const path = require('path');
-const { getKeyAtPosition, getKeyRangeAtPosition, getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
+const { getKeyAtPosition, getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
 const { getNestedValue, stringifyJsonLike, renameJsonKey } = require('../utils/json-utils');
 
-const KEY_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$/;
+const KEY_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_.]*$/;
 
 /**
- * @typedef {{ methodName: string, params: string, start: number, end: number, keyType: 'flat' | 'nested' }} TranslationCall
+ * Validates `newKey`. Returns an error string if invalid, null if valid.
+ * @param {string} newKey
+ * @returns {string | null}
  */
-
-class TranslationKeyRenameProvider {
-    constructor(translationService, onBeforeRename = null) {
-        if (!translationService) {
-            throw new Error('TranslationKeyRenameProvider requires translationService');
-        }
-        this.translationService = translationService;
-        this.onBeforeRename = onBeforeRename;
+function validateRenameKey(newKey) {
+    if (!KEY_PATTERN.test(newKey)) {
+        return 'Not a valid translation key. Use letters, numbers, underscores, and dots only.';
     }
-
-    prepareRename(document, position) {
-        const key = getKeyAtPosition(document, position);
-        if (key === null) {
-            return Promise.reject(new Error('Rename is only available on translation key call sites.'));
-        }
-        const range = getKeyRangeAtPosition(document, position);
-        return { range, placeholder: key };
-    }
-
-    async provideRenameEdits(document, position, newName) {
-        if (!KEY_PATTERN.test(newName)) {
-            return Promise.reject(new Error(`"${newName}" is not a valid translation key. Use letters, numbers, underscores, and dots only.`));
-        }
-
-        const oldKey = getKeyAtPosition(document, position);
-        if (oldKey === null) {
-            return Promise.reject(new Error('No translation key at cursor.'));
-        }
-
-        if (oldKey === newName) {
-            return new vscode.WorkspaceEdit();
-        }
-
-        const projectRoot = getProjectRoot(document);
-        if (projectRoot === null) {
-            return Promise.reject(new Error('Could not find inlang project root for this file.'));
-        }
-
-        const edit = new vscode.WorkspaceEdit();
-        await renameInLocaleFiles(edit, projectRoot, oldKey, newName);
-        await renameInSourceFiles(edit, projectRoot, oldKey, newName, this.translationService);
-
-        // Tell the activator exactly which URIs this edit touches, so it can
-        // track them event-by-event rather than using a blind timer.
-        if (this.onBeforeRename) {
-            const uriStrings = collectEditUris(edit);
-            this.onBeforeRename(uriStrings);
-        }
-
-        return edit;
-    }
+    return null;
 }
 
 /**
- * Collect all URI strings that a WorkspaceEdit will touch.
- * @param {vscode.WorkspaceEdit} edit
- * @returns {string[]}
+ * Builds a WorkspaceEdit that renames `oldKey` → `newKey` across all locale
+ * files and source files in the project rooted at the document's workspace.
+ *
+ * @param {vscode.WorkspaceEdit} edit  Mutated in-place.
+ * @param {vscode.TextDocument} document  The source document the cursor is in.
+ * @param {string} oldKey
+ * @param {string} newKey
+ * @param {object} translationService  Must expose `findTranslationCalls(text)`.
+ * @returns {Promise<void>}  Rejects with a user-facing Error on any problem.
  */
-function collectEditUris(edit) {
-    return edit.entries().map(([uri]) => uri.toString());
+async function buildRenameEdit(edit, document, oldKey, newKey, translationService) {
+    if (oldKey === newKey) return;
+
+    const projectRoot = getProjectRoot(document);
+    if (!projectRoot) throw new Error('Could not find inlang project root for this file.');
+
+    await _renameInLocaleFiles(edit, projectRoot, oldKey, newKey);
+    await _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService);
 }
 
-async function renameInLocaleFiles(edit, projectRoot, oldKey, newKey) {
-    const localeFiles = await loadLocaleFiles(projectRoot, oldKey, newKey);
+// ── private helpers ──────────────────────────────────────────────────────────
 
-    for (const localeFile of localeFiles) {
-        if (!localeFile.hasOldKey) continue;
-        const updated = renameJsonKey(localeFile.json, oldKey, newKey);
-        edit.replace(localeFile.uri, fullDocumentRange(), stringifyJsonLike(localeFile.raw, updated));
+async function _renameInLocaleFiles(edit, projectRoot, oldKey, newKey) {
+    const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey);
+    for (const lf of localeFiles) {
+        if (!lf.hasOldKey) continue;
+        const updated = renameJsonKey(lf.json, oldKey, newKey);
+        edit.replace(lf.uri, _fullDocumentRange(), stringifyJsonLike(lf.raw, updated));
     }
 }
 
-async function loadLocaleFiles(projectRoot, oldKey, newKey) {
+async function _loadLocaleFiles(projectRoot, oldKey, newKey) {
     const localePaths = await getLocaleFilePaths(projectRoot);
     const files = [];
-
     for (const filePath of localePaths) {
-        const raw = await readTextFile(filePath);
-        if (raw === null) continue;
-
-        const json = parseJson(raw);
-        if (json === null) continue;
-
+        const raw = await _readText(filePath);
+        if (raw == null) continue;
+        const json = _parseJson(raw);
+        if (json == null) continue;
         files.push({
             uri: vscode.Uri.file(filePath),
             raw,
             json,
-            hasOldKey: isKeyPresent(json, oldKey),
-            hasNewKey: isKeyPresent(json, newKey),
+            hasOldKey: _isKeyPresent(json, oldKey),
+            hasNewKey: _isKeyPresent(json, newKey),
         });
     }
-
-    for (const file of files) {
-        if (file.hasNewKey) {
-            return Promise.reject(new Error(`Key "${newKey}" already exists in ${path.basename(file.uri.fsPath)}. Rename aborted.`));
-        }
+    for (const f of files) {
+        if (f.hasNewKey) throw new Error(`Key "${newKey}" already exists in ${path.basename(f.uri.fsPath)}. Rename aborted.`);
     }
-
     return files;
 }
 
-async function readTextFile(filePath) {
-    try {
-        return await fs.readFile(filePath, 'utf8');
-    } catch {
-        return null;
-    }
-}
-
-function parseJson(raw) {
-    try {
-        const value = JSON.parse(raw);
-        return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-    } catch {
-        return null;
-    }
-}
-
-function fullDocumentRange() {
-    return new vscode.Range(
-        new vscode.Position(0, 0),
-        new vscode.Position(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
-    );
-}
-
-async function renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService) {
+async function _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService) {
     const files = await vscode.workspace.findFiles(
         new vscode.RelativePattern(projectRoot, '**/*.{ts,js,svelte}'),
-        new vscode.RelativePattern(projectRoot, '**/{node_modules,.git,paraglide}/**'),
+        new vscode.RelativePattern(projectRoot, '{node_modules,.git,paraglide}/**'),
     );
-
     for (const fileUri of files) {
-        if (fileUri.fsPath.includes('/paraglide/') || fileUri.fsPath.includes('\\paraglide\\')) {
-            continue;
-        }
-
-        const document = await vscode.workspace.openTextDocument(fileUri);
-        const text = document.getText();
-
+        if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) continue;
+        const doc = await vscode.workspace.openTextDocument(fileUri);
+        const text = doc.getText();
         for (const call of translationService.findTranslationCalls(text)) {
             if (call.methodName !== oldKey) continue;
-
-            const sourceEdit = buildSourceEdit(document, call, text, newKey);
-            edit.replace(document.uri, sourceEdit.range, sourceEdit.replacement);
+            const src = _buildSourceEdit(doc, call, text, newKey);
+            edit.replace(doc.uri, src.range, src.replacement);
         }
     }
 }
 
-function buildSourceEdit(document, call, text, newKey) {
+/**
+ * @param {vscode.TextDocument} document
+ * @param {{ keyType: string, start: number, end: number, methodName: string }} call
+ * @param {string} text
+ * @param {string} newKey
+ * @returns {{ range: vscode.Range, replacement: string }}
+ */
+function _buildSourceEdit(document, call, text, newKey) {
     if (call.keyType === 'flat') {
         return {
-            range: newKey.includes('.') ? new vscode.Range(
-                document.positionAt(call.start + 1),
-                document.positionAt(call.start + 2 + call.methodName.length),
-            ) : new vscode.Range(
-                document.positionAt(call.start + 2),
-                document.positionAt(call.start + 2 + call.methodName.length),
-            ),
+            range: newKey.includes('.')
+                ? new vscode.Range(document.positionAt(call.start + 1), document.positionAt(call.start + 2 + call.methodName.length))
+                : new vscode.Range(document.positionAt(call.start + 2), document.positionAt(call.start + 2 + call.methodName.length)),
             replacement: newKey.includes('.') ? `["${newKey}"]` : newKey,
         };
     }
-
     const matchText = text.slice(call.start, call.end);
-    const nestedMatch = /\bm\[(['"`])([^'"]+)\1\]\s*\(/.exec(matchText);
+    const nestedMatch = /\["([^\]]+)"\]/.exec(matchText);
     if (!nestedMatch) {
         return {
             range: new vscode.Range(document.positionAt(call.start), document.positionAt(call.end)),
             replacement: newKey,
         };
     }
-
     const keyOffset = matchText.indexOf(nestedMatch[2]);
-    const range = new vscode.Range(
-        document.positionAt(call.start + keyOffset),
-        document.positionAt(call.start + keyOffset + nestedMatch[2].length),
-    );
-    return { range, replacement: newKey };
+    return {
+        range: new vscode.Range(
+            document.positionAt(call.start + keyOffset),
+            document.positionAt(call.start + keyOffset + nestedMatch[2].length),
+        ),
+        replacement: newKey,
+    };
 }
 
-function isKeyPresent(obj, keyPath) {
+async function _readText(filePath) {
+    try { return await fs.readFile(filePath, 'utf8'); } catch { return null; }
+}
+
+function _parseJson(raw) {
+    try {
+        const v = JSON.parse(raw);
+        return typeof v === 'object' && !Array.isArray(v) ? v : null;
+    } catch { return null; }
+}
+
+function _fullDocumentRange() {
+    return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER));
+}
+
+function _isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
 }
 
-module.exports = { TranslationKeyRenameProvider };
+module.exports = { buildRenameEdit, validateRenameKey };

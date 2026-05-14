@@ -6,7 +6,8 @@ const { SidebarTreeProvider } = require('../sidebar/provider');
 const { LocaleService } = require('../locale/service');
 const { TranslationService } = require('../translation/service');
 const { ExtractionService } = require('../extraction/service');
-const { TranslationKeyRenameProvider } = require('../providers/renameProvider');
+const { buildRenameEdit, validateRenameKey } = require('../providers/renameProvider');
+const { getKeyAtPosition } = require('../utils/i18n-detection');
 
 class ExtensionActivator {
     constructor() {
@@ -19,63 +20,6 @@ class ExtensionActivator {
         this.disposables = [];
         this.translationFileWatchers = [];
         this.documentUpdateTimeouts = new Map();
-        /** @type {Set<string>} URIs (as strings) that are part of the in-flight rename edit. */
-        this._pendingRenameUris = new Set();
-    }
-
-    /**
-     * Register a set of URIs as belonging to an in-flight rename.
-     * All events for these URIs will be suppressed until every URI has been
-     * acknowledged via _acknowledgeRenameUri(), at which point a single
-     * clean refresh is performed.
-     * @param {string[]} uriStrings
-     */
-    beginRename(uriStrings) {
-        for (const u of uriStrings) {
-            this._pendingRenameUris.add(u);
-        }
-    }
-
-    /**
-     * Called from event handlers when a URI that was part of a rename edit
-     * fires its change/save event. Removes it from the pending set and, once
-     * empty, triggers a clean refresh.
-     * @param {string} uriString
-     */
-    async _acknowledgeRenameUri(uriString) {
-        if (!this._pendingRenameUris.has(uriString)) return;
-        this._pendingRenameUris.delete(uriString);
-        if (this._pendingRenameUris.size === 0) {
-            await this._postRenameRefresh();
-        }
-    }
-
-    async _postRenameRefresh() {
-        const activeEditor = vscode.window.activeTextEditor;
-        if (!activeEditor) return;
-        try {
-            await this.editorService.processDocument(activeEditor.document);
-            await this.sidebarTreeProvider.refresh(activeEditor.document, false);
-            await vscode.commands.executeCommand(
-                'setContext',
-                'elementaryWatson.isCursorOnI18nCall',
-                this.editorService.getCodeLensProvider().isPositionOnI18nCall(
-                    activeEditor.document,
-                    activeEditor.selection.active
-                )
-            );
-        } catch (err) {
-            console.error('Error during post-rename refresh:', err);
-        }
-    }
-
-    /**
-     * Returns true if the given URI string is part of an in-flight rename.
-     * @param {string} uriString
-     * @returns {boolean}
-     */
-    _isPendingRename(uriString) {
-        return this._pendingRenameUris.has(uriString);
     }
 
     getDebounceDelay() {
@@ -138,7 +82,7 @@ class ExtensionActivator {
         this.registerCopyTranslationCommand();
         this.registerTranslationLabelClickCommand();
         this.registerCodeLensProvider();
-        this.registerRenameProvider();
+        this.registerRenameKeyCommand();
         this.setupEventListeners();
         this.setupTranslationFileWatchers();
         this.processActiveEditor();
@@ -262,136 +206,63 @@ class ExtensionActivator {
         this.disposables.push(codeLensDisposable);
     }
 
-    registerRenameProvider() {
-        const renameProvider = new TranslationKeyRenameProvider(
-            this.translationService,
-            (uriStrings) => this.beginRename(uriStrings)
-        );
+    registerRenameKeyCommand() {
+        const cmd = vscode.commands.registerCommand('elementaryWatson.renameKey', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) return;
 
-        const renameDisposable = vscode.languages.registerRenameProvider(
-            [
-                { language: 'typescript', scheme: 'file' },
-                { language: 'javascript', scheme: 'file' },
-                { language: 'svelte', scheme: 'file' },
-            ],
-            renameProvider
-        );
-        this.disposables.push(renameDisposable);
-    }
+            const { document, selection } = editor;
+            const oldKey = getKeyAtPosition(document, selection.active);
+            if (!oldKey) {
+                vscode.window.showErrorMessage('Place the cursor on a translation key to rename it.');
+                return;
+            }
 
-    async setupTranslationFileWatchers() {
-        this.disposeTranslationFileWatchers();
+            const newKey = await vscode.window.showInputBox({
+                prompt: 'New translation key name',
+                value: oldKey,
+                validateInput: validateRenameKey,
+            });
+            if (!newKey || newKey === oldKey) return;
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-
-        for (const folder of workspaceFolders) {
-            const workspacePath = folder.uri.fsPath;
-
+            const edit = new vscode.WorkspaceEdit();
             try {
-                const pathPattern = await this.localeService.getTranslationPathPatternAsync(workspacePath);
-                const globPattern = pathPattern.replace('{locale}', '*').replace(/^\.\//, '');
-                const watcher = vscode.workspace.createFileSystemWatcher(
-                    new vscode.RelativePattern(folder, globPattern)
-                );
-
-                watcher.onDidChange(async (uri) => {
-                    // If this URI is part of a pending rename, the onDidChangeTextDocument
-                    // handler will acknowledge it — skip the FS watcher path entirely.
-                    if (this._isPendingRename(uri.toString())) return;
-                    const locale = path.basename(uri.fsPath, '.json');
-                    await this.handleTranslationFileChange(locale);
-                });
-
-                watcher.onDidCreate(async (uri) => {
-                    if (this._isPendingRename(uri.toString())) return;
-                    const locale = path.basename(uri.fsPath, '.json');
-                    await this.handleTranslationFileChange(locale);
-                });
-
-                this.translationFileWatchers.push(watcher);
-                this.disposables.push(watcher);
-            } catch (error) {
-                console.error('Error setting up translation file watchers:', error);
+                await buildRenameEdit(edit, document, oldKey, newKey, this.translationService);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Rename failed: ${err.message}`);
+                return;
             }
-        }
-    }
 
-    async handleTranslationFileChange(locale) {
-        try {
-            console.log(`📝 Translation file changed for locale: ${locale}`);
-            const activeEditor = vscode.window.activeTextEditor;
-
-            const hasPreservedContext = this.sidebarTreeProvider.currentFilePath &&
-                this.sidebarTreeProvider.translationData.length > 0;
-
-            if (hasPreservedContext) {
-                const preservedFilePath = this.sidebarTreeProvider.currentFilePath;
-                try {
-                    const preservedDocument = await vscode.workspace.openTextDocument(preservedFilePath);
-                    if (activeEditor && activeEditor.document.uri.fsPath === preservedFilePath) {
-                        await this.editorService.processDocument(activeEditor.document);
-                    }
-                    await this.sidebarTreeProvider.refresh(preservedDocument, true);
-                    console.log(`🔄 Updated preserved context for: ${path.basename(preservedFilePath)}`);
-                } catch (error) {
-                    console.error('Error refreshing preserved context:', error);
-                    this.sidebarTreeProvider._onDidChangeTreeData.fire();
-                }
+            const success = await vscode.workspace.applyEdit(edit);
+            if (success) {
+                await this.processActiveEditor();
             } else {
-                if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
-                    await this.editorService.processDocument(activeEditor.document);
-                    await this.sidebarTreeProvider.refresh(activeEditor.document);
-                }
+                vscode.window.showErrorMessage('ElementaryWatson: workspace.applyEdit failed — no changes were made.');
             }
-        } catch (error) {
-            console.error('Error handling translation file change:', error);
-        }
-    }
-
-    disposeTranslationFileWatchers() {
-        for (const watcher of this.translationFileWatchers) {
-            watcher.dispose();
-        }
-        this.translationFileWatchers = [];
+        });
+        this.disposables.push(cmd);
     }
 
     setupEventListeners() {
         const saveDisposable = vscode.workspace.onDidSaveTextDocument(async (document) => {
-            const uriStr = document.uri.toString();
-            if (this._isPendingRename(uriStr)) {
-                await this._acknowledgeRenameUri(uriStr);
-                return;
-            }
             if (this.editorService.isSupportedDocument(document)) {
-                console.log(`\n💾 Save detected: ${path.basename(document.uri.fsPath)}`);
-
-                const existingTimeout = this.documentUpdateTimeouts.get(uriStr);
-                if (existingTimeout) {
-                    clearTimeout(existingTimeout);
-                    this.documentUpdateTimeouts.delete(uriStr);
-                }
-
+                console.log(`\n💾 File saved: ${path.basename(document.uri.fsPath)}`);
                 await this.editorService.processDocument(document);
                 await this.sidebarTreeProvider.refresh(document);
             }
         });
 
         const editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(async (editor) => {
-            if (editor && this.editorService.isSupportedDocument(editor.document)) {
-                await this.editorService.processDocument(editor.document);
-                await this.sidebarTreeProvider.refresh(editor.document);
-                await vscode.commands.executeCommand(
-                    'setContext',
-                    'elementaryWatson.isCursorOnI18nCall',
-                    this.editorService.getCodeLensProvider().isPositionOnI18nCall(editor.document, editor.selection.active)
-                );
-            } else if (editor && await this.sidebarService.isTranslationFile(editor.document)) {
-                await this.sidebarTreeProvider.refresh(editor.document);
-                await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
+            if (editor) {
+                console.log(`\n📄 Active editor changed: ${path.basename(editor.document.uri.fsPath)}`);
+                if (this.editorService.isSupportedDocument(editor.document)) {
+                    await this.editorService.processDocument(editor.document);
+                    await this.sidebarTreeProvider.refresh(editor.document);
+                } else {
+                    await this.sidebarTreeProvider.refresh(editor.document);
+                }
             } else {
                 await this.sidebarTreeProvider.refresh(null);
-                await vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
             }
         });
 
@@ -406,16 +277,6 @@ class ExtensionActivator {
         const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
             const document = event.document;
             const uriStr = document.uri.toString();
-
-            // If this is part of a rename edit, acknowledge it and skip normal handling.
-            if (this._isPendingRename(uriStr)) {
-                // Only acknowledge once the edit has actual content changes
-                // (VS Code fires a dirty-state change with empty contentChanges first).
-                if (event.contentChanges.length > 0) {
-                    await this._acknowledgeRenameUri(uriStr);
-                }
-                return;
-            }
 
             if (!this.isRealtimeUpdatesEnabled()) return;
             if (!this.editorService.isSupportedDocument(document)) return;
@@ -476,6 +337,45 @@ class ExtensionActivator {
             configChangeDisposable,
             workspaceFoldersChangeDisposable
         );
+    }
+
+    async setupTranslationFileWatchers() {
+        this.disposeTranslationFileWatchers();
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) return;
+
+        for (const folder of workspaceFolders) {
+            const pattern = new vscode.RelativePattern(folder, '**/*.json');
+            const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+            watcher.onDidChange(async (uri) => {
+                console.log(`\n📝 Translation file changed: ${path.basename(uri.fsPath)}`);
+                const activeEditor = vscode.window.activeTextEditor;
+                if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
+                    await this.editorService.processDocument(activeEditor.document);
+                    await this.sidebarTreeProvider.refresh(activeEditor.document);
+                }
+            });
+
+            watcher.onDidCreate(async (uri) => {
+                console.log(`\n✨ Translation file created: ${path.basename(uri.fsPath)}`);
+                const activeEditor = vscode.window.activeTextEditor;
+                if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
+                    await this.editorService.processDocument(activeEditor.document);
+                    await this.sidebarTreeProvider.refresh(activeEditor.document);
+                }
+            });
+
+            this.translationFileWatchers.push(watcher);
+        }
+    }
+
+    disposeTranslationFileWatchers() {
+        for (const watcher of this.translationFileWatchers) {
+            watcher.dispose();
+        }
+        this.translationFileWatchers = [];
     }
 
     async processActiveEditor() {
