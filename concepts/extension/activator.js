@@ -19,61 +19,75 @@ class ExtensionActivator {
         this.disposables = [];
         this.translationFileWatchers = [];
         this.documentUpdateTimeouts = new Map();
-        this._suppressWatcherRefresh = false;
+        /** @type {Set<string>} URIs (as strings) that are part of the in-flight rename edit. */
+        this._pendingRenameUris = new Set();
     }
 
     /**
-     * Suppress all watcher/save/change refresh handlers for `ms` milliseconds,
-     * then trigger a single clean refresh of the active editor.
-     * @param {number} ms
+     * Register a set of URIs as belonging to an in-flight rename.
+     * All events for these URIs will be suppressed until every URI has been
+     * acknowledged via _acknowledgeRenameUri(), at which point a single
+     * clean refresh is performed.
+     * @param {string[]} uriStrings
      */
-    suppressWatcherRefreshFor(ms) {
-        this._suppressWatcherRefresh = true;
-        setTimeout(async () => {
-            this._suppressWatcherRefresh = false;
-            const activeEditor = vscode.window.activeTextEditor;
-            if (activeEditor) {
-                try {
-                    await this.editorService.processDocument(activeEditor.document);
-                    await this.sidebarTreeProvider.refresh(activeEditor.document, false);
-                    await vscode.commands.executeCommand(
-                        'setContext',
-                        'elementaryWatson.isCursorOnI18nCall',
-                        this.editorService.getCodeLensProvider().isPositionOnI18nCall(
-                            activeEditor.document,
-                            activeEditor.selection.active
-                        )
-                    );
-                } catch (err) {
-                    console.error('Error during post-rename refresh:', err);
-                }
-            }
-        }, ms);
+    beginRename(uriStrings) {
+        for (const u of uriStrings) {
+            this._pendingRenameUris.add(u);
+        }
     }
 
     /**
-     * Get the current debounce delay from configuration
-     * @returns {number} Debounce delay in milliseconds
+     * Called from event handlers when a URI that was part of a rename edit
+     * fires its change/save event. Removes it from the pending set and, once
+     * empty, triggers a clean refresh.
+     * @param {string} uriString
      */
+    async _acknowledgeRenameUri(uriString) {
+        if (!this._pendingRenameUris.has(uriString)) return;
+        this._pendingRenameUris.delete(uriString);
+        if (this._pendingRenameUris.size === 0) {
+            await this._postRenameRefresh();
+        }
+    }
+
+    async _postRenameRefresh() {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (!activeEditor) return;
+        try {
+            await this.editorService.processDocument(activeEditor.document);
+            await this.sidebarTreeProvider.refresh(activeEditor.document, false);
+            await vscode.commands.executeCommand(
+                'setContext',
+                'elementaryWatson.isCursorOnI18nCall',
+                this.editorService.getCodeLensProvider().isPositionOnI18nCall(
+                    activeEditor.document,
+                    activeEditor.selection.active
+                )
+            );
+        } catch (err) {
+            console.error('Error during post-rename refresh:', err);
+        }
+    }
+
+    /**
+     * Returns true if the given URI string is part of an in-flight rename.
+     * @param {string} uriString
+     * @returns {boolean}
+     */
+    _isPendingRename(uriString) {
+        return this._pendingRenameUris.has(uriString);
+    }
+
     getDebounceDelay() {
         const config = vscode.workspace.getConfiguration('elementaryWatson');
         return config.get('updateDelay', 300);
     }
 
-    /**
-     * Check if real-time updates are enabled
-     * @returns {boolean} True if real-time updates are enabled
-     */
     isRealtimeUpdatesEnabled() {
         const config = vscode.workspace.getConfiguration('elementaryWatson');
         return config.get('realtimeUpdates', true);
     }
 
-    /**
-     * Debounce utility for document updates
-     * @param {string} documentUri - The document URI
-     * @param {Function} callback - The function to execute after debounce
-     */
     debounceDocumentUpdate(documentUri, callback) {
         const existingTimeout = this.documentUpdateTimeouts.get(documentUri);
         if (existingTimeout) {
@@ -89,11 +103,6 @@ class ExtensionActivator {
         this.documentUpdateTimeouts.set(documentUri, timeout);
     }
 
-    /**
-     * Check if a document change might affect translation calls or their positions
-     * @param {vscode.TextDocumentChangeEvent} event
-     * @returns {boolean}
-     */
     shouldUpdateForChange(event) {
         const changes = event.contentChanges;
         if (changes.length === 0) return false;
@@ -117,10 +126,6 @@ class ExtensionActivator {
         return false;
     }
 
-    /**
-     * Activate the extension
-     * @param {vscode.ExtensionContext} context
-     */
     activate(context) {
         console.log('ElementaryWatson i18n companion is now active!');
 
@@ -146,9 +151,6 @@ class ExtensionActivator {
         }
     }
 
-    /**
-     * Register the sidebar tree provider
-     */
     registerSidebar() {
         this.treeView = vscode.window.createTreeView('elementaryWatsonSidebar', {
             treeDataProvider: this.sidebarTreeProvider,
@@ -159,22 +161,15 @@ class ExtensionActivator {
         vscode.commands.executeCommand('setContext', 'elementaryWatson.showSidebar', true);
     }
 
-    /**
-     * Register sidebar-related commands
-     */
     registerSidebarCommands() {
         const openTranslationCommand = vscode.commands.registerCommand('elementaryWatson.openTranslationFile',
             async (workspacePath, locale, key) => {
                 await this.sidebarService.openTranslationFile(workspacePath, locale, key);
             }
         );
-
         this.disposables.push(openTranslationCommand);
     }
 
-    /**
-     * Register the change locale command
-     */
     registerChangeLocaleCommand() {
         const changeLocaleCommand = vscode.commands.registerCommand('elementaryWatson.changeLocale', async () => {
             const currentLocale = this.localeService.getCurrentLocale();
@@ -190,13 +185,9 @@ class ExtensionActivator {
                 await this.processActiveEditor();
             }
         });
-
         this.disposables.push(changeLocaleCommand);
     }
 
-    /**
-     * Register the inspect translation command
-     */
     registerInspectTranslationCommand() {
         const inspectCommand = vscode.commands.registerCommand('elementaryWatson.inspectTranslation', async () => {
             const activeEditor = vscode.window.activeTextEditor;
@@ -211,13 +202,9 @@ class ExtensionActivator {
                 await this.inspectTranslation(result.methodName, activeEditor.document.uri.fsPath);
             }
         });
-
         this.disposables.push(inspectCommand);
     }
 
-    /**
-     * Register the extract text command
-     */
     registerExtractTextCommand() {
         const extractCommand = vscode.commands.registerCommand('elementaryWatson.extractText', async () => {
             const editor = vscode.window.activeTextEditor;
@@ -231,13 +218,9 @@ class ExtensionActivator {
 
             await this.extractionService.extractSelectedText(editor, document, selection);
         });
-
         this.disposables.push(extractCommand);
     }
 
-    /**
-     * Register the copy translation command
-     */
     registerCopyTranslationCommand() {
         const copyTranslationCommand = vscode.commands.registerCommand('elementaryWatson.copyTranslation',
             async (translationValue) => {
@@ -247,13 +230,9 @@ class ExtensionActivator {
                 }
             }
         );
-
         this.disposables.push(copyTranslationCommand);
     }
 
-    /**
-     * Register the translation label click command
-     */
     registerTranslationLabelClickCommand() {
         const clickLabelCommand = vscode.commands.registerCommand('elementaryWatson.clickTranslationLabel',
             async (translationKey, filePath) => {
@@ -265,13 +244,9 @@ class ExtensionActivator {
                 }
             }
         );
-
         this.disposables.push(clickLabelCommand);
     }
 
-    /**
-     * Register the CodeLens provider
-     */
     registerCodeLensProvider() {
         const codeLensProvider = this.editorService.getCodeLensProvider();
         const codeLensDisposable = vscode.languages.registerCodeLensProvider(
@@ -284,17 +259,13 @@ class ExtensionActivator {
             ],
             codeLensProvider
         );
-
         this.disposables.push(codeLensDisposable);
     }
 
-    /**
-     * Register the rename provider
-     */
     registerRenameProvider() {
         const renameProvider = new TranslationKeyRenameProvider(
             this.translationService,
-            ms => this.suppressWatcherRefreshFor(ms)
+            (uriStrings) => this.beginRename(uriStrings)
         );
 
         const renameDisposable = vscode.languages.registerRenameProvider(
@@ -305,13 +276,9 @@ class ExtensionActivator {
             ],
             renameProvider
         );
-
         this.disposables.push(renameDisposable);
     }
 
-    /**
-     * Set up translation file watchers
-     */
     async setupTranslationFileWatchers() {
         this.disposeTranslationFileWatchers();
 
@@ -329,11 +296,15 @@ class ExtensionActivator {
                 );
 
                 watcher.onDidChange(async (uri) => {
+                    // If this URI is part of a pending rename, the onDidChangeTextDocument
+                    // handler will acknowledge it — skip the FS watcher path entirely.
+                    if (this._isPendingRename(uri.toString())) return;
                     const locale = path.basename(uri.fsPath, '.json');
                     await this.handleTranslationFileChange(locale);
                 });
 
                 watcher.onDidCreate(async (uri) => {
+                    if (this._isPendingRename(uri.toString())) return;
                     const locale = path.basename(uri.fsPath, '.json');
                     await this.handleTranslationFileChange(locale);
                 });
@@ -346,13 +317,7 @@ class ExtensionActivator {
         }
     }
 
-    /**
-     * Handle changes to translation files
-     * @param {string} locale The locale of the changed file
-     */
     async handleTranslationFileChange(locale) {
-        if (this._suppressWatcherRefresh) return;
-
         try {
             console.log(`📝 Translation file changed for locale: ${locale}`);
             const activeEditor = vscode.window.activeTextEditor;
@@ -384,9 +349,6 @@ class ExtensionActivator {
         }
     }
 
-    /**
-     * Dispose of translation file watchers
-     */
     disposeTranslationFileWatchers() {
         for (const watcher of this.translationFileWatchers) {
             watcher.dispose();
@@ -394,19 +356,20 @@ class ExtensionActivator {
         this.translationFileWatchers = [];
     }
 
-    /**
-     * Set up event listeners for document changes and configuration changes
-     */
     setupEventListeners() {
         const saveDisposable = vscode.workspace.onDidSaveTextDocument(async (document) => {
-            if (this._suppressWatcherRefresh) return;
+            const uriStr = document.uri.toString();
+            if (this._isPendingRename(uriStr)) {
+                await this._acknowledgeRenameUri(uriStr);
+                return;
+            }
             if (this.editorService.isSupportedDocument(document)) {
                 console.log(`\n💾 Save detected: ${path.basename(document.uri.fsPath)}`);
 
-                const existingTimeout = this.documentUpdateTimeouts.get(document.uri.toString());
+                const existingTimeout = this.documentUpdateTimeouts.get(uriStr);
                 if (existingTimeout) {
                     clearTimeout(existingTimeout);
-                    this.documentUpdateTimeouts.delete(document.uri.toString());
+                    this.documentUpdateTimeouts.delete(uriStr);
                 }
 
                 await this.editorService.processDocument(document);
@@ -442,13 +405,23 @@ class ExtensionActivator {
 
         const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
             const document = event.document;
+            const uriStr = document.uri.toString();
 
-            if (this._suppressWatcherRefresh) return;
+            // If this is part of a rename edit, acknowledge it and skip normal handling.
+            if (this._isPendingRename(uriStr)) {
+                // Only acknowledge once the edit has actual content changes
+                // (VS Code fires a dirty-state change with empty contentChanges first).
+                if (event.contentChanges.length > 0) {
+                    await this._acknowledgeRenameUri(uriStr);
+                }
+                return;
+            }
+
             if (!this.isRealtimeUpdatesEnabled()) return;
             if (!this.editorService.isSupportedDocument(document)) return;
             if (!this.shouldUpdateForChange(event)) return;
 
-            this.debounceDocumentUpdate(document.uri.toString(), async () => {
+            this.debounceDocumentUpdate(uriStr, async () => {
                 try {
                     if (!this.isRealtimeUpdatesEnabled()) return;
                     console.log(`\n✏️  Content change detected: ${path.basename(document.uri.fsPath)} (debounced)`);
@@ -505,10 +478,6 @@ class ExtensionActivator {
         );
     }
 
-    /**
-     * Process the currently active editor
-     * @returns {Promise<void>}
-     */
     async processActiveEditor() {
         if (vscode.window.activeTextEditor) {
             const document = vscode.window.activeTextEditor.document;
@@ -527,11 +496,6 @@ class ExtensionActivator {
         }
     }
 
-    /**
-     * Inspect the translation for a key in a file.
-     * @param {string} translationKey
-     * @param {string} filePath
-     */
     async inspectTranslation(translationKey, filePath) {
         await vscode.commands.executeCommand('workbench.view.extension.elementaryWatson');
 
@@ -553,9 +517,6 @@ class ExtensionActivator {
         console.log(`🔍 Clicked translation label: ${translationKey} (locale: ${currentLocale})`);
     }
 
-    /**
-     * Deactivate the extension
-     */
     deactivate() {
         for (const timeout of this.documentUpdateTimeouts.values()) {
             clearTimeout(timeout);

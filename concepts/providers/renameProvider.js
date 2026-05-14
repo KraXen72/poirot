@@ -20,25 +20,15 @@ class TranslationKeyRenameProvider {
         this.onBeforeRename = onBeforeRename;
     }
 
-    /**
-     * @param {import('vscode').TextDocument} document
-     * @param {import('vscode').Position} position
-     */
     prepareRename(document, position) {
         const key = getKeyAtPosition(document, position);
         if (key === null) {
             return Promise.reject(new Error('Rename is only available on translation key call sites.'));
         }
-
         const range = getKeyRangeAtPosition(document, position);
         return { range, placeholder: key };
     }
 
-    /**
-     * @param {import('vscode').TextDocument} document
-     * @param {import('vscode').Position} position
-     * @param {string} newName
-     */
     async provideRenameEdits(document, position, newName) {
         if (!KEY_PATTERN.test(newName)) {
             return Promise.reject(new Error(`"${newName}" is not a valid translation key. Use letters, numbers, underscores, and dots only.`));
@@ -58,57 +48,50 @@ class TranslationKeyRenameProvider {
             return Promise.reject(new Error('Could not find inlang project root for this file.'));
         }
 
-        // Suppress watcher/save/change event handlers BEFORE building the edit,
-        // so that no handler fires during WorkspaceEdit application.
-        if (this.onBeforeRename) this.onBeforeRename(1500);
-
         const edit = new vscode.WorkspaceEdit();
         await renameInLocaleFiles(edit, projectRoot, oldKey, newName);
         await renameInSourceFiles(edit, projectRoot, oldKey, newName, this.translationService);
+
+        // Tell the activator exactly which URIs this edit touches, so it can
+        // track them event-by-event rather than using a blind timer.
+        if (this.onBeforeRename) {
+            const uriStrings = collectEditUris(edit);
+            this.onBeforeRename(uriStrings);
+        }
+
         return edit;
     }
 }
 
 /**
- * @param {import('vscode').WorkspaceEdit} edit
- * @param {string} projectRoot
- * @param {string} oldKey
- * @param {string} newKey
- * @returns {Promise<void>}
+ * Collect all URI strings that a WorkspaceEdit will touch.
+ * @param {vscode.WorkspaceEdit} edit
+ * @returns {string[]}
  */
+function collectEditUris(edit) {
+    return edit.entries().map(([uri]) => uri.toString());
+}
+
 async function renameInLocaleFiles(edit, projectRoot, oldKey, newKey) {
     const localeFiles = await loadLocaleFiles(projectRoot, oldKey, newKey);
 
     for (const localeFile of localeFiles) {
-        if (!localeFile.hasOldKey) {
-            continue;
-        }
-
+        if (!localeFile.hasOldKey) continue;
         const updated = renameJsonKey(localeFile.json, oldKey, newKey);
         edit.replace(localeFile.uri, fullDocumentRange(), stringifyJsonLike(localeFile.raw, updated));
     }
 }
 
-/**
- * @param {string} projectRoot
- * @param {string} oldKey
- * @param {string} newKey
- * @returns {Promise<Array<{ uri: import('vscode').Uri, raw: string, json: Record<string, unknown>, hasOldKey: boolean, hasNewKey: boolean }>>}
- */
 async function loadLocaleFiles(projectRoot, oldKey, newKey) {
     const localePaths = await getLocaleFilePaths(projectRoot);
     const files = [];
 
     for (const filePath of localePaths) {
         const raw = await readTextFile(filePath);
-        if (raw === null) {
-            continue;
-        }
+        if (raw === null) continue;
 
         const json = parseJson(raw);
-        if (json === null) {
-            continue;
-        }
+        if (json === null) continue;
 
         files.push({
             uri: vscode.Uri.file(filePath),
@@ -128,10 +111,6 @@ async function loadLocaleFiles(projectRoot, oldKey, newKey) {
     return files;
 }
 
-/**
- * @param {string} filePath
- * @returns {Promise<string | null>}
- */
 async function readTextFile(filePath) {
     try {
         return await fs.readFile(filePath, 'utf8');
@@ -140,10 +119,6 @@ async function readTextFile(filePath) {
     }
 }
 
-/**
- * @param {string} raw
- * @returns {Record<string, unknown> | null}
- */
 function parseJson(raw) {
     try {
         const value = JSON.parse(raw);
@@ -153,9 +128,6 @@ function parseJson(raw) {
     }
 }
 
-/**
- * @returns {import('vscode').Range}
- */
 function fullDocumentRange() {
     return new vscode.Range(
         new vscode.Position(0, 0),
@@ -163,14 +135,6 @@ function fullDocumentRange() {
     );
 }
 
-/**
- * @param {import('vscode').WorkspaceEdit} edit
- * @param {string} projectRoot
- * @param {string} oldKey
- * @param {string} newKey
- * @param {TranslationService} translationService
- * @returns {Promise<void>}
- */
 async function renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService) {
     const files = await vscode.workspace.findFiles(
         new vscode.RelativePattern(projectRoot, '**/*.{ts,js,svelte}'),
@@ -186,9 +150,7 @@ async function renameInSourceFiles(edit, projectRoot, oldKey, newKey, translatio
         const text = document.getText();
 
         for (const call of translationService.findTranslationCalls(text)) {
-            if (call.methodName !== oldKey) {
-                continue;
-            }
+            if (call.methodName !== oldKey) continue;
 
             const sourceEdit = buildSourceEdit(document, call, text, newKey);
             edit.replace(document.uri, sourceEdit.range, sourceEdit.replacement);
@@ -196,13 +158,6 @@ async function renameInSourceFiles(edit, projectRoot, oldKey, newKey, translatio
     }
 }
 
-/**
- * @param {import('vscode').TextDocument} document
- * @param {TranslationCall} call
- * @param {string} text
- * @param {string} newKey
- * @returns {{ range: import('vscode').Range, replacement: string }}
- */
 function buildSourceEdit(document, call, text, newKey) {
     if (call.keyType === 'flat') {
         return {
@@ -234,15 +189,8 @@ function buildSourceEdit(document, call, text, newKey) {
     return { range, replacement: newKey };
 }
 
-/**
- * @param {unknown} obj
- * @param {string} keyPath
- * @returns {boolean}
- */
 function isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
 }
 
-module.exports = {
-    TranslationKeyRenameProvider,
-};
+module.exports = { TranslationKeyRenameProvider };
