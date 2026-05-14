@@ -550,6 +550,10 @@ class ExtensionActivator {
                 const delay = this.getDebounceDelay();
                 console.log(`⏱️  Update delay changed to ${delay}ms`);
             }
+
+            if (event.affectsConfiguration('elementaryWatson.enableCodeLens')) {
+                this.editorService.getCodeLensProvider().refresh();
+            }
         });
 
         // Listen for workspace folder changes to refresh translation file watchers

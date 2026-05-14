@@ -23,11 +23,31 @@ class TranslationCodeLensProvider {
     }
 
     /**
+     * Refresh CodeLens items.
+     */
+    refresh() {
+        this._onDidChangeCodeLenses.fire();
+    }
+
+    /**
+     * Check whether CodeLens is enabled.
+     * @returns {boolean}
+     */
+    isCodeLensEnabled() {
+        const config = vscode.workspace.getConfiguration('elementaryWatson');
+        return config.get('enableCodeLens', true);
+    }
+
+    /**
      * Provide CodeLens items for translation calls
      * @param {vscode.TextDocument} document The document
      * @returns {Array<vscode.CodeLens>} Array of CodeLens items
      */
     provideCodeLenses(document) {
+        if (!this.isCodeLensEnabled()) {
+            return [];
+        }
+
         if (!this.document || document.uri.toString() !== this.document.uri.toString()) {
             return [];
         }

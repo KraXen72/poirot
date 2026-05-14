@@ -69,7 +69,8 @@ Configure the default locale in your VS Code settings:
 {
   "elementaryWatson.defaultLocale": "es",
   "elementaryWatson.realtimeUpdates": true,
-  "elementaryWatson.updateDelay": 300
+  "elementaryWatson.updateDelay": 300,
+  "elementaryWatson.enableCodeLens": true
 }
 ```
 
@@ -77,6 +78,7 @@ Configure the default locale in your VS Code settings:
 - `elementaryWatson.defaultLocale`: Default locale for displaying translation labels
 - `elementaryWatson.realtimeUpdates`: Enable/disable real-time updates while typing (default: true)
 - `elementaryWatson.updateDelay`: Delay in milliseconds before updating labels after typing stops (100-2000ms, default: 300ms)
+- `elementaryWatson.enableCodeLens`: Enable/disable the CodeLens actions above translation calls while keeping inline labels and decorations visible (default: true)
 
 ### Locale Priority Order
 
