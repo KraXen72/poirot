@@ -214,14 +214,4 @@ function _isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
 }
 
-/**
- * Minimal rename provider class; exists so test/extension.test.js can require it.
- */
-class TranslationKeyRenameProvider {
-    constructor(translationService, onBeforeRename) {
-        this.translationService = translationService;
-        this.onBeforeRename = onBeforeRename;
-    }
-}
-
-module.exports = { buildRenameEdit, validateRenameKey, TranslationKeyRenameProvider };
+module.exports = { buildRenameEdit, validateRenameKey };

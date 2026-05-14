@@ -76,14 +76,13 @@ class ExtensionActivator {
     }
 
     _isPendingRename(uri) {
-        return this._pendingRenameUris?.has(uri) ?? false;
+        return this._pendingRenameUris !== null && this._pendingRenameUris.has(uri);
     }
 
     async _acknowledgeRenameUri(uri) {
         if (!this._pendingRenameUris?.has(uri)) return;
         this._pendingRenameUris.delete(uri);
         if (this._pendingRenameUris.size === 0) {
-            this._pendingRenameUris = null;
             await this._postRenameRefresh();
         }
     }
