@@ -328,6 +328,13 @@ class ExtractionService {
         await fs.writeFile(translationPath, output, 'utf8');
     }
 
+    /**
+     * Replace selected text with the key call
+     * @param {vscode.TextEditor['document']} document The text editor's document
+     * @param {vscode.TextEditor['selection']} selection The text editor's selection
+     * @param {string} replacement The replacement text
+     * @returns {Promise<boolean>} True if successful
+     */
     async replaceSelectedText(document, selection, replacement) {
         const edit = new vscode.WorkspaceEdit();
         edit.replace(document.uri, selection, replacement);

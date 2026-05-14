@@ -1,5 +1,11 @@
 const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
 
+/**
+ * Format key call based on key type and interpolation preference
+ * @param {string} key The translation key
+ * @param {string} interpolationType 'template' or 'code'
+ * @returns {string} The formatted key call
+ */
 function formatKeyCall(key, interpolationType) {
     if (typeof key !== 'string' || key.length === 0) {
         throw new TypeError('formatKeyCall: key must be a non-empty string');
