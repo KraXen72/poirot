@@ -96,8 +96,8 @@
       },
       {
         "command": "elementaryWatson.inspectTranslation",
-        "title": "Inspect Translation",
-        "category": "ElementaryWatson"
+        "when": "editorTextFocus && (editorLangId == 'javascript' || editorLangId == 'javascriptreact' || editorLangId == 'typescript' || editorLangId == 'typescriptreact' || editorLangId == 'svelte')",
+        "group": "navigation"
       },
       {
         "command": "elementaryWatson.extractText",
@@ -115,22 +115,15 @@
         "category": "ElementaryWatson"
       }
     ],
-    "keybindings": [
-      {
-        "command": "elementaryWatson.renameKey",
-        "key": "f2",
-        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall"
-      }
-    ],
     "editor/context": [
       {
         "command": "elementaryWatson.inspectTranslation",
-        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
+        "when": "editorTextFocus",
         "group": "navigation"
       },
       {
         "command": "elementaryWatson.renameKey",
-        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
+        "when": "editorTextFocus",
         "group": "navigation"
       }
     ]

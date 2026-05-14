@@ -133,19 +133,21 @@ class ExtensionActivator {
     }
 
     registerInspectTranslationCommand() {
-        const inspectCommand = vscode.commands.registerCommand('elementaryWatson.inspectTranslation', async () => {
-            const activeEditor = vscode.window.activeTextEditor;
-            if (!activeEditor) return;
-
-            const result = this.editorService.getCodeLensProvider().getTranslationResultAtPosition(
-                activeEditor.document,
-                activeEditor.selection.active
-            );
-
-            if (result) {
+        const inspectCommand = vscode.commands.registerCommand(
+            'elementaryWatson.inspectTranslation',
+            async () => {
+                const activeEditor = vscode.window.activeTextEditor;
+                if (!activeEditor) return;
+                const result = this.editorService.getCodeLensProvider.getTranslationResultAtPosition(
+                    activeEditor.document, activeEditor.selection.active
+                );
+                if (!result) {
+                    vscode.window.showInformationMessage('Place the cursor on a translation call (e.g. m.someKey) to inspect it.');
+                    return;
+                }
                 await this.inspectTranslation(result.methodName, activeEditor.document.uri.fsPath);
             }
-        });
+        );
         this.disposables.push(inspectCommand);
     }
 
@@ -266,14 +268,6 @@ class ExtensionActivator {
             }
         });
 
-        const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection((event) => {
-            const onCall = this.editorService.getCodeLensProvider().isPositionOnI18nCall(
-                event.textEditor.document,
-                event.selections[0].active
-            );
-            vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', onCall);
-        });
-
         const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
             const document = event.document;
             const uriStr = document.uri.toString();
@@ -332,7 +326,6 @@ class ExtensionActivator {
         this.disposables.push(
             saveDisposable,
             editorChangeDisposable,
-            selectionChangeDisposable,
             documentChangeDisposable,
             configChangeDisposable,
             workspaceFoldersChangeDisposable
@@ -384,15 +377,9 @@ class ExtensionActivator {
             if (this.editorService.isSupportedDocument(document)) {
                 await this.editorService.processDocument(document);
                 await this.sidebarTreeProvider.refresh(document);
-                vscode.commands.executeCommand(
-                    'setContext',
-                    'elementaryWatson.isCursorOnI18nCall',
-                    this.editorService.getCodeLensProvider().isPositionOnI18nCall(document, vscode.window.activeTextEditor.selection.active)
-                );
             }
         } else {
             await this.sidebarTreeProvider.refresh(null);
-            vscode.commands.executeCommand('setContext', 'elementaryWatson.isCursorOnI18nCall', false);
         }
     }
 
