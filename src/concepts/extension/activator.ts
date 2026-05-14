@@ -574,6 +574,23 @@ export class ExtensionActivator {
   }
 
   /**
+   * Refresh sidebar after a document update without replacing active/preserved context.
+   * This prevents workspace-wide edits (like rename) from switching the sidebar to a non-active file.
+   */
+  private async refreshSidebarAfterDocumentUpdate(document: vscode.TextDocument): Promise<void> {
+    const activeEditor = vscode.window.activeTextEditor;
+
+    if (activeEditor?.document.uri.toString() === document.uri.toString()) {
+      await this.translationKeysProvider.refresh(document);
+      return;
+    }
+
+    if (this.translationKeysProvider.currentFilePath === document.uri.fsPath) {
+      await this.translationKeysProvider.refresh(document, true);
+    }
+  }
+
+  /**
    * Set up event listeners for document changes and configuration changes
    */
   private setupEventListeners(): void {
@@ -592,7 +609,7 @@ export class ExtensionActivator {
         await this.editorService.processDocument(document);
 
         // Refresh sidebar for the saved document
-        await this.translationKeysProvider.refresh(document);
+        await this.refreshSidebarAfterDocumentUpdate(document);
       }
     });
 
@@ -646,7 +663,7 @@ export class ExtensionActivator {
           await this.editorService.processDocument(document);
 
           // Refresh sidebar for the changed document
-          await this.translationKeysProvider.refresh(document);
+          await this.refreshSidebarAfterDocumentUpdate(document);
         } catch (error) {
           console.error('Error processing document content change:', error);
         }
