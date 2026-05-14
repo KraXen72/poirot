@@ -5,6 +5,7 @@ const { LocaleService } = require('../locale/service');
 const { ExtractionService } = require('../extraction/service');
 const { SidebarService } = require('../sidebar/service');
 const { SidebarTreeProvider } = require('../sidebar/provider');
+const { TranslationKeyRenameProvider } = require('../providers/renameProvider');
 
 /**
  * Extension activator that manages the lifecycle and event handling
@@ -131,6 +132,9 @@ class ExtensionActivator {
 
         // Register CodeLens provider
         this.registerCodeLensProvider();
+
+        // Register rename provider
+        this.registerRenameProvider();
 
         // Set up event listeners
         this.setupEventListeners();
@@ -362,6 +366,24 @@ class ExtensionActivator {
         );
 
         this.disposables.push(codeLensDisposable);
+    }
+
+    /**
+     * Register the rename provider
+     */
+    registerRenameProvider() {
+        const renameProvider = new TranslationKeyRenameProvider();
+
+        const renameDisposable = vscode.languages.registerRenameProvider(
+            [
+                { language: 'typescript', scheme: 'file' },
+                { language: 'javascript', scheme: 'file' },
+                { language: 'svelte', scheme: 'file' }
+            ],
+            renameProvider
+        );
+
+        this.disposables.push(renameDisposable);
     }
 
     /**
