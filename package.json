@@ -147,8 +147,7 @@
     "@types/vscode": "^1.99.3",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.25.1",
-    "mock-require": "^3.0.3"
+    "eslint": "^9.25.1"
   },
   "dependencies": {
     "human-id": "^4.1.1"

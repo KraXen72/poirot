@@ -1,26 +1,3 @@
-const mock = require('mock-require');
-
-// Stub the entire vscode module before any code tries to require it
-const vscodeStub = {
-    window: {
-        createTextEditorDecorationType: () => ({ dispose() {} }),
-    },
-    EventEmitter: class {
-        constructor() { this.event = () => {}; }
-        fire() {}
-        dispose() {}
-    },
-    DecorationRangeBehavior: { ClosedClosed: 0 },
-    workspace: {
-        getConfiguration: () => ({ get: () => undefined }),
-    },
-    commands: {
-        executeCommand: async () => {},
-    },
-};
-
-mock('vscode', vscodeStub);
-
 const assert = require('assert');
 
 suite('ExtensionActivator rename tracking', () => {
