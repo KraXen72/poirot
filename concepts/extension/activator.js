@@ -544,6 +544,7 @@ class ExtensionActivator {
     setupEventListeners() {
         // Listen for document saves
         const saveDisposable = vscode.workspace.onDidSaveTextDocument(async (document) => {
+            if (this._suppressWatcherRefresh) return;
             if (this.editorService.isSupportedDocument(document)) {
                 console.log(`\n💾 Save detected: ${path.basename(document.uri.fsPath)}`);
                 
@@ -596,6 +597,8 @@ class ExtensionActivator {
         // Listen for document content changes (new!)
         const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
             const document = event.document;
+
+            if (this._suppressWatcherRefresh) return;
             
             // Check if real-time updates are enabled
             if (!this.isRealtimeUpdatesEnabled()) {
