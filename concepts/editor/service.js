@@ -49,7 +49,7 @@ class EditorService {
             }
 
             // Load translations using the current locale
-            const currentLocale = this.localeService.getCurrentLocale();
+            const currentLocale = await this.localeService.getCurrentLocale();
             const translations = await this.translationService.loadTranslationsForLocale(
                 workspaceFolder.uri.fsPath, 
                 currentLocale
