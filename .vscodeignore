@@ -4,6 +4,7 @@ test/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
+repomix-output.xml
 **/jsconfig.json
 **/*.map
 **/eslint.config.mjs

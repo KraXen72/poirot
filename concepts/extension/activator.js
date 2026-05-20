@@ -132,8 +132,14 @@ class ExtensionActivator {
         // Register the change locale command
         this.registerChangeLocaleCommand();
 
+        // Register the inspect translation command
+        this.registerInspectTranslationCommand();
+
         // Register the extract text command
         this.registerExtractTextCommand();
+
+        // Register the rename translation key command
+        this.registerRenameKeyCommand();
 
         // Register sidebar commands
         this.registerSidebarCommands();

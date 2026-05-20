@@ -73,6 +73,39 @@ suite('ExtensionActivator rename tracking', () => {
     });
 });
 
+suite('ExtensionActivator activation', () => {
+    /** @returns {import('../concepts/extension/activator').ExtensionActivator} */
+    function makeActivator() {
+        const { ExtensionActivator } = require('../concepts/extension/activator');
+        return new ExtensionActivator();
+    }
+
+    test('registers contributed command handlers during activation', () => {
+        const a = makeActivator();
+        const calls = [];
+
+        a.registerSidebar = () => calls.push('registerSidebar');
+        a.sidebarTreeProvider.setTreeView = () => {};
+        a.registerChangeLocaleCommand = () => calls.push('registerChangeLocaleCommand');
+        a.registerInspectTranslationCommand = () => calls.push('registerInspectTranslationCommand');
+        a.registerExtractTextCommand = () => calls.push('registerExtractTextCommand');
+        a.registerRenameKeyCommand = () => calls.push('registerRenameKeyCommand');
+        a.registerSidebarCommands = () => calls.push('registerSidebarCommands');
+        a.registerCopyTranslationCommand = () => calls.push('registerCopyTranslationCommand');
+        a.registerTranslationLabelClickCommand = () => calls.push('registerTranslationLabelClickCommand');
+        a.registerCodeLensProvider = () => calls.push('registerCodeLensProvider');
+        a.setupEventListeners = () => calls.push('setupEventListeners');
+        a.setupTranslationFileWatchers = () => calls.push('setupTranslationFileWatchers');
+        a.processActiveEditor = () => calls.push('processActiveEditor');
+        a.editorService.getDecorator = () => ({ getDecorationType: () => null });
+
+        a.activate({ subscriptions: [] });
+
+        assert.ok(calls.includes('registerInspectTranslationCommand'));
+        assert.ok(calls.includes('registerRenameKeyCommand'));
+    });
+});
+
 suite('validateRenameKey', () => {
     const { validateRenameKey } = require('../concepts/providers/renameProvider');
 
