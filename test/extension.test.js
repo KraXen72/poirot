@@ -90,6 +90,7 @@ suite('ExtensionActivator activation', () => {
         a.registerInspectTranslationCommand = () => calls.push('registerInspectTranslationCommand');
         a.registerExtractTextCommand = () => calls.push('registerExtractTextCommand');
         a.registerRenameKeyCommand = () => calls.push('registerRenameKeyCommand');
+        a.registerDeleteKeyCommands = () => calls.push('registerDeleteKeyCommands');
         a.registerSidebarCommands = () => calls.push('registerSidebarCommands');
         a.registerCopyTranslationCommand = () => calls.push('registerCopyTranslationCommand');
         a.registerTranslationLabelClickCommand = () => calls.push('registerTranslationLabelClickCommand');
@@ -103,6 +104,7 @@ suite('ExtensionActivator activation', () => {
 
         assert.ok(calls.includes('registerInspectTranslationCommand'));
         assert.ok(calls.includes('registerRenameKeyCommand'));
+        assert.ok(calls.includes('registerDeleteKeyCommands'));
     });
 });
 
@@ -134,5 +136,91 @@ suite('validateRenameKey', () => {
 
     test('rejects empty string', () => {
         assert.ok(typeof validateRenameKey('') === 'string');
+    });
+});
+
+suite('deleteProvider helpers', () => {
+    const {
+        applyCallReplacements,
+        buildUsageSearchRegex,
+        findBalancedCallEnd,
+        getLocalePathsByLocale,
+    } = require('../concepts/providers/deleteProvider');
+
+    test('replaces flat and bracket notation calls with a string literal', () => {
+        const text = 'const a = m.title(); const b = m["nested.key"]({ count });';
+        const calls = [
+            { methodName: 'title', start: 10, end: 19, keyType: 'flat' },
+            { methodName: 'nested.key', start: 31, end: 57, keyType: 'nested' },
+        ];
+
+        assert.strictEqual(
+            applyCallReplacements(text, calls, '"Title"'),
+            'const a = "Title"; const b = "Title";',
+        );
+    });
+
+    test('uses balanced call ranges when arguments contain nested parentheses', () => {
+        const text = 'const greeting = m.greeting({ name: format(user) });';
+        const call = { methodName: 'greeting', start: 17, end: 48, keyType: 'flat' };
+
+        assert.strictEqual(findBalancedCallEnd(text, call), 51);
+        assert.strictEqual(
+            applyCallReplacements(text, [{ ...call, end: findBalancedCallEnd(text, call) }], '"Hello"'),
+            'const greeting = "Hello";',
+        );
+    });
+
+    test('builds a search regex for supported flat and bracket usage forms', () => {
+        const regex = buildUsageSearchRegex('my_key');
+        assert.match('{m.my_key()}', new RegExp(regex, 'u'));
+        assert.match('m.my_key({ count })', new RegExp(regex, 'u'));
+        assert.match('{m["my_key"]()}', new RegExp(regex, 'u'));
+        assert.match("{m['my_key']()}", new RegExp(regex, 'u'));
+        assert.match('{m[`my_key`]()}', new RegExp(regex, 'u'));
+        assert.doesNotMatch('{m.my_key_extra()}', new RegExp(regex, 'u'));
+    });
+
+    test('builds a bracket-only search regex for nested keys', () => {
+        const regex = buildUsageSearchRegex('nested.key');
+        assert.match('m["nested.key"]()', new RegExp(regex, 'u'));
+        assert.match("m['nested.key']()", new RegExp(regex, 'u'));
+        assert.match('m[`nested.key`]()', new RegExp(regex, 'u'));
+        assert.doesNotMatch('m.nested.key()', new RegExp(regex, 'u'));
+    });
+
+    test('preserves locale names for directory-based locale path patterns', async () => {
+        const localeService = {
+            getAvailableLocales: async () => ['en', 'es'],
+            resolveTranslationPathAsync: async (root, locale) => `${root}/messages/${locale}/messages.json`,
+        };
+
+        assert.deepStrictEqual(
+            await getLocalePathsByLocale('/workspace', localeService),
+            [
+                { locale: 'en', filePath: '/workspace/messages/en/messages.json' },
+                { locale: 'es', filePath: '/workspace/messages/es/messages.json' },
+            ],
+        );
+    });
+});
+
+suite('json-utils delete helpers', () => {
+    const { deleteJsonKey, flattenJsonKeys } = require('../concepts/utils/json-utils');
+
+    test('removes a nested key without affecting siblings', () => {
+        const input = { title: 'Title', nested: { keep: 'Keep', remove: 'Remove' } };
+        assert.deepStrictEqual(
+            deleteJsonKey(input, 'nested.remove'),
+            { title: 'Title', nested: { keep: 'Keep' } },
+        );
+        assert.deepStrictEqual(input, { title: 'Title', nested: { keep: 'Keep', remove: 'Remove' } });
+    });
+
+    test('flattens leaf keys from nested locale JSON', () => {
+        assert.deepStrictEqual(
+            flattenJsonKeys({ title: 'Title', nested: { body: 'Body' }, variants: [] }).sort(),
+            ['nested.body', 'title', 'variants'],
+        );
     });
 });

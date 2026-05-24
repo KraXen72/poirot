@@ -7,7 +7,15 @@ const { LocaleService } = require('../locale/service');
 const { TranslationService } = require('../translation/service');
 const { ExtractionService } = require('../extraction/service');
 const { buildRenameEdit, validateRenameKey } = require('../providers/renameProvider');
-const { getKeyAtPosition } = require('../utils/i18n-detection');
+const {
+    applyDeleteKeyPlan,
+    collectLocaleKeys,
+    countSourceUsages,
+    createDeleteKeyPlan,
+    openUsageSearch,
+} = require('../providers/deleteProvider');
+const { getKeyAtPosition, getProjectRoot } = require('../utils/i18n-detection');
+const { hasWorkspaceEdits } = require('../utils/text-edits');
 
 class ExtensionActivator {
     constructor() {
@@ -140,6 +148,9 @@ class ExtensionActivator {
 
         // Register the rename translation key command
         this.registerRenameKeyCommand();
+
+        // Register delete translation key commands
+        this.registerDeleteKeyCommands();
 
         // Register sidebar commands
         this.registerSidebarCommands();
@@ -346,14 +357,115 @@ class ExtensionActivator {
                 return;
             }
 
-            const success = await vscode.workspace.applyEdit(edit);
-            if (success) {
-                await this.processActiveEditor();
-            } else {
+            if (hasWorkspaceEdits(edit) && !await vscode.workspace.applyEdit(edit)) {
                 vscode.window.showErrorMessage('ElementaryWatson: workspace.applyEdit failed — no changes were made.');
+                return;
             }
+
+            await this.processActiveEditor();
         });
         this.disposables.push(cmd);
+    }
+
+    registerDeleteKeyCommands() {
+        const deleteAtCursor = vscode.commands.registerCommand('elementaryWatson.deleteKey', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) return;
+
+            const key = getKeyAtPosition(editor.document, editor.selection.active, this.translationService);
+            if (!key) {
+                vscode.window.showErrorMessage('Place the cursor on a translation key usage to delete it.');
+                return;
+            }
+
+            const projectRoot = this.getProjectRootForCommand(editor.document);
+            if (!projectRoot) {
+                vscode.window.showErrorMessage('Could not determine workspace for this file.');
+                return;
+            }
+
+            await this.deleteTranslationKey(projectRoot, key);
+        });
+
+        const deleteByName = vscode.commands.registerCommand('elementaryWatson.deleteKeyByName', async () => {
+            const projectRoot = this.getProjectRootForCommand(vscode.window.activeTextEditor?.document);
+            if (!projectRoot) {
+                vscode.window.showErrorMessage('Could not determine workspace.');
+                return;
+            }
+
+            let keys;
+            try {
+                keys = await collectLocaleKeys(projectRoot, this.localeService);
+            } catch (error) {
+                vscode.window.showErrorMessage(`Could not load translation keys: ${error.message}`);
+                return;
+            }
+
+            if (keys.length === 0) {
+                vscode.window.showInformationMessage('No translation keys found.');
+                return;
+            }
+
+            const selected = await vscode.window.showQuickPick(
+                keys.map(key => ({ label: key })),
+                { placeHolder: 'Select a translation key to delete' },
+            );
+            if (!selected) return;
+
+            await this.deleteTranslationKey(projectRoot, selected.label);
+        });
+
+        this.disposables.push(deleteAtCursor, deleteByName);
+    }
+
+    getProjectRootForCommand(document) {
+        if (document) {
+            return getProjectRoot(document);
+        }
+
+        return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
+    }
+
+    async deleteTranslationKey(projectRoot, key) {
+        let plan;
+        try {
+            plan = await createDeleteKeyPlan(projectRoot, key, this.translationService, this.localeService);
+        } catch (error) {
+            vscode.window.showErrorMessage(`Delete failed: ${error.message}`);
+            return;
+        }
+
+        await openUsageSearch(projectRoot, key);
+
+        const usageCount = countSourceUsages(plan);
+        const usageText = usageCount === 1 ? '1 usage' : `${usageCount} usages`;
+        const localeText = plan.localeFiles.length === 1 ? '1 locale file' : `${plan.localeFiles.length} locale files`;
+        const actionText = usageCount > 0
+            ? `Delete "${key}" from ${localeText} and inline "${plan.inlineValue}" at ${usageText}?`
+            : `Delete unused key "${key}" from ${localeText}?`;
+        const confirmed = await vscode.window.showWarningMessage(
+            `${actionText} Review the Search results before confirming.`,
+            { modal: true },
+            'Delete Translation Key',
+        );
+        if (confirmed !== 'Delete Translation Key') return;
+
+        const edit = new vscode.WorkspaceEdit();
+        try {
+            await applyDeleteKeyPlan(edit, plan);
+        } catch (error) {
+            vscode.window.showErrorMessage(`Delete failed: ${error.message}`);
+            return;
+        }
+
+        if (hasWorkspaceEdits(edit) && !await vscode.workspace.applyEdit(edit)) {
+            vscode.window.showErrorMessage('ElementaryWatson: workspace.applyEdit failed. Some saved files may already have been updated.');
+            return;
+        }
+
+        await this.processActiveEditor();
+        vscode.window.showInformationMessage(`Deleted translation key "${key}".`);
     }
 
     /**

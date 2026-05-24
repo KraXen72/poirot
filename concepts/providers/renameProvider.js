@@ -1,10 +1,10 @@
 // @ts-check
 /// <reference types="node" />
 const vscode = require('vscode');
-const fs = require('fs/promises');
 const path = require('path');
 const { getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
 const { getNestedValue, stringifyJsonLike, renameJsonKey } = require('../utils/json-utils');
+const { readTextDocumentOrFile, stageOrWriteTextFile } = require('../utils/text-edits');
 
 const KEY_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_.]*$/;
 
@@ -23,11 +23,10 @@ function validateRenameKey(newKey) {
 
 /**
  * Orchestrates the renaming of a translation key (`oldKey` to `newKey`) across an entire project.
- * It updates all locale files (JSON) and source files (.ts, .js, .svelte). File-system writes
- * are performed directly, except for the currently active document, whose edits are added to
- * the provided `WorkspaceEdit` to keep the editor state consistent and the change undoable.
+ * It updates all locale files (JSON) and source files. Saved or unopened files are written
+ * directly; dirty open documents are edited through the provided `WorkspaceEdit`.
  *
- * @param {vscode.WorkspaceEdit} edit - The workspace edit object to which the active document's text replacements are added.
+ * @param {vscode.WorkspaceEdit} edit - The workspace edit object to which dirty document replacements are added.
  * @param {vscode.TextDocument} activeDocument - The text document that is currently active in the editor.
  * @param {string} oldKey - The original dot-separated translation key to rename.
  * @param {string} newKey - The new dot-separated translation key.
@@ -42,8 +41,8 @@ async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translation
     const projectRoot = getProjectRoot(activeDocument);
     if (!projectRoot) throw new Error('Could not find inlang project root for this file.');
 
-    await _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService);
-    await _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService);
+    await _renameInLocaleFiles(edit, projectRoot, oldKey, newKey, localeService);
+    await _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService);
 }
 
 /**
@@ -57,15 +56,15 @@ async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translation
  * @returns {Promise<void>}
  * @throws {Error} If the new key already exists in any locale file.
  */
-async function _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService) {
+async function _renameInLocaleFiles(edit, projectRoot, oldKey, newKey, localeService) {
     const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey, localeService);
     await Promise.all(
         localeFiles
             .filter(lf => lf.hasOldKey)
-            .map(lf => {
+            .map(async lf => {
                 const updated = renameJsonKey(lf.json, oldKey, newKey);
                 const content = stringifyJsonLike(lf.raw, updated);
-                return vscode.workspace.fs.writeFile(lf.uri, Buffer.from(content, 'utf8'));
+                await stageOrWriteTextFile(edit, lf.uri, content);
             })
     );
 }
@@ -85,12 +84,13 @@ async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
     const localePaths = await getLocaleFilePaths(projectRoot, localeService);
     const files = [];
     for (const filePath of localePaths) {
-        const raw = await _readText(filePath);
+        const uri = vscode.Uri.file(filePath);
+        const raw = await readTextDocumentOrFile(uri);
         if (raw == null) continue;
         const json = _parseJson(raw);
         if (json == null) continue;
         files.push({
-            uri: vscode.Uri.file(filePath),
+            uri,
             raw,
             json,
             hasOldKey: _isKeyPresent(json, oldKey),
@@ -107,46 +107,33 @@ async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
 
 /**
  * Finds all source files in the project, identifies translation calls matching the `oldKey`,
- * and applies the renaming. Files not currently open are written directly to disk, while the
- * active document's edits are staged in the provided `WorkspaceEdit`.
+ * and applies the renaming. Saved or unopened files are written directly to disk, while dirty
+ * open documents are staged in the provided `WorkspaceEdit`.
  *
- * @param {vscode.WorkspaceEdit} edit - The workspace edit to populate for the active document.
- * @param {vscode.TextDocument} activeDocument - The currently open text document.
+ * @param {vscode.WorkspaceEdit} edit - The workspace edit to populate for dirty open documents.
  * @param {string} projectRoot - The absolute path to the project root.
  * @param {string} oldKey - The original translation key.
  * @param {string} newKey - The new translation key.
  * @param {object} translationService - Service to find translation calls in source text.
  * @returns {Promise<void>}
  */
-async function _renameInSourceFiles(edit, activeDocument, projectRoot, oldKey, newKey, translationService) {
+async function _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService) {
     const files = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(projectRoot, '**/*.{ts,js,svelte}'),
+        new vscode.RelativePattern(projectRoot, '**/*.{js,jsx,ts,tsx,svelte}'),
         new vscode.RelativePattern(projectRoot, '{node_modules,.git,paraglide}/**'),
     );
 
     await Promise.all(files.map(async fileUri => {
         if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) return;
 
-        const raw = await _readText(fileUri.fsPath);
+        const raw = await readTextDocumentOrFile(fileUri);
         if (raw == null) return;
 
         const calls = translationService.findTranslationCalls(raw).filter(c => c.methodName === oldKey);
         if (calls.length === 0) return;
 
-        const isActiveDoc = fileUri.toString() === activeDocument.uri.toString();
-
-        if (isActiveDoc) {
-            // Active document: go through WorkspaceEdit so the open buffer
-            // stays in sync and the edit is undoable.
-            for (const call of calls) {
-                const src = _buildSourceEdit(activeDocument, call, raw, newKey);
-                edit.replace(activeDocument.uri, src.range, src.replacement);
-            }
-        } else {
-            // Not open: apply replacements to the raw string and write to disk.
-            const newContent = _applyReplacementsToText(raw, calls, newKey);
-            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(newContent, 'utf8'));
-        }
+        const newContent = _applyReplacementsToText(raw, calls, newKey);
+        await stageOrWriteTextFile(edit, fileUri, newContent);
     }));
 }
 
@@ -212,35 +199,7 @@ function _buildCharReplacement(text, call, newKey) {
     };
 }
 
-/**
- * Constructs a VSCode Range and replacement text for a translation call within an open document.
- * This is a thin wrapper that converts the raw text offset logic into editor coordinates.
- *
- * @param {vscode.TextDocument} document - The document to create the edit for.
- * @param {{keyType: string, start: number, end: number, methodName: string}} call - The translation call descriptor.
- * @param {string} text - The full text of the document.
- * @param {string} newKey - The replacement key.
- * @returns {{ range: vscode.Range, replacement: string }} An object containing the range to replace and the new text.
- */
-function _buildSourceEdit(document, call, text, newKey) {
-    const { charStart, charEnd, replacement } = _buildCharReplacement(text, call, newKey);
-    return {
-        range: new vscode.Range(document.positionAt(charStart), document.positionAt(charEnd)),
-        replacement,
-    };
-}
-
 // helpers
-
-/**
- * Reads a file from the given path with UTF-8 encoding.
- *
- * @param {string} filePath - The absolute path to the file.
- * @returns {Promise<string | null>} The file content as a string, or `null` if an error occurs (e.g., file not found).
- */
-async function _readText(filePath) {
-    try { return await fs.readFile(filePath, 'utf8'); } catch { return null; }
-}
 
 /**
  * Safely parses a JSON string into a plain object.

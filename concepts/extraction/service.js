@@ -6,6 +6,7 @@ const { LocaleService } = require('../locale/service');
 const { TranslationService } = require('../translation/service');
 const { deepClone, setNestedValue, stringifyJsonLike } = require('../utils/json-utils');
 const { formatKeyCall } = require('../utils/key-format');
+const { stageOrWriteDocumentRange } = require('../utils/text-edits');
 
 /**
  * Service for extracting strings and adding them to locale files
@@ -337,7 +338,11 @@ class ExtractionService {
      */
     async replaceSelectedText(document, selection, replacement) {
         const edit = new vscode.WorkspaceEdit();
-        edit.replace(document.uri, selection, replacement);
+        const mode = await stageOrWriteDocumentRange(edit, document, selection, replacement);
+        if (mode === 'fileWrite') {
+            return true;
+        }
+
         const success = await vscode.workspace.applyEdit(edit);
         if (!success) {
             vscode.window.showErrorMessage('ElementaryWatson: Failed to update editor — please try again.');
