@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
 const { getNestedValue, stringifyJsonLike, renameJsonKey } = require('../utils/json-utils');
-const { readTextDocumentOrFile, stageOrWriteTextFile } = require('../utils/text-edits');
+const { readTextDocumentOrFile } = require('../utils/text-edits');
 
 const KEY_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_.]*$/;
 
@@ -22,27 +22,27 @@ function validateRenameKey(newKey) {
 }
 
 /**
- * Orchestrates the renaming of a translation key (`oldKey` to `newKey`) across an entire project.
- * It updates all locale files (JSON) and source files. Saved or unopened files are written
- * directly; dirty open documents are edited through the provided `WorkspaceEdit`.
+ * Builds full-file replacement plans for renaming a translation key (`oldKey` to `newKey`)
+ * across locale and source files.
  *
- * @param {vscode.WorkspaceEdit} edit - The workspace edit object to which dirty document replacements are added.
  * @param {vscode.TextDocument} activeDocument - The text document that is currently active in the editor.
  * @param {string} oldKey - The original dot-separated translation key to rename.
  * @param {string} newKey - The new dot-separated translation key.
  * @param {object} translationService - A service object that must expose a `findTranslationCalls(text: string)` method.
  * @param {object} localeService - A service object that must expose a `getLocaleFilePaths(projectRoot: string)` method.
- * @returns {Promise<void>} A promise that resolves when all replacements are complete.
+ * @returns {Promise<Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>>}
  * @throws {Error} Throws a user-facing error if the project root cannot be found or if the operation fails.
  */
-async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translationService, localeService) {
-    if (oldKey === newKey) return;
+async function buildRenameChanges(activeDocument, oldKey, newKey, translationService, localeService) {
+    if (oldKey === newKey) return [];
 
     const projectRoot = getProjectRoot(activeDocument);
     if (!projectRoot) throw new Error('Could not find inlang project root for this file.');
 
-    await _renameInLocaleFiles(edit, projectRoot, oldKey, newKey, localeService);
-    await _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService);
+    return [
+        ...await _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService),
+        ...await _renameInSourceFiles(projectRoot, oldKey, newKey, translationService),
+    ];
 }
 
 /**
@@ -56,17 +56,20 @@ async function buildRenameEdit(edit, activeDocument, oldKey, newKey, translation
  * @returns {Promise<void>}
  * @throws {Error} If the new key already exists in any locale file.
  */
-async function _renameInLocaleFiles(edit, projectRoot, oldKey, newKey, localeService) {
+async function _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService) {
     const localeFiles = await _loadLocaleFiles(projectRoot, oldKey, newKey, localeService);
-    await Promise.all(
-        localeFiles
-            .filter(lf => lf.hasOldKey)
-            .map(async lf => {
-                const updated = renameJsonKey(lf.json, oldKey, newKey);
-                const content = stringifyJsonLike(lf.raw, updated);
-                await stageOrWriteTextFile(edit, lf.uri, content);
-            })
-    );
+    return localeFiles
+        .filter(lf => lf.hasOldKey)
+        .map(lf => {
+            const updated = renameJsonKey(lf.json, oldKey, newKey);
+            const content = stringifyJsonLike(lf.raw, updated);
+            return {
+                uri: lf.uri,
+                oldText: lf.raw,
+                newText: content,
+                reason: `rename locale key in ${path.basename(lf.uri.fsPath)}`,
+            };
+        });
 }
 
 /**
@@ -107,34 +110,40 @@ async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
 
 /**
  * Finds all source files in the project, identifies translation calls matching the `oldKey`,
- * and applies the renaming. Saved or unopened files are written directly to disk, while dirty
- * open documents are staged in the provided `WorkspaceEdit`.
+ * and builds replacement plans for files that contain matching calls.
  *
- * @param {vscode.WorkspaceEdit} edit - The workspace edit to populate for dirty open documents.
  * @param {string} projectRoot - The absolute path to the project root.
  * @param {string} oldKey - The original translation key.
  * @param {string} newKey - The new translation key.
  * @param {object} translationService - Service to find translation calls in source text.
- * @returns {Promise<void>}
+ * @returns {Promise<Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>>}
  */
-async function _renameInSourceFiles(edit, projectRoot, oldKey, newKey, translationService) {
+async function _renameInSourceFiles(projectRoot, oldKey, newKey, translationService) {
     const files = await vscode.workspace.findFiles(
         new vscode.RelativePattern(projectRoot, '**/*.{js,jsx,ts,tsx,svelte}'),
         new vscode.RelativePattern(projectRoot, '{node_modules,.git,paraglide}/**'),
     );
 
-    await Promise.all(files.map(async fileUri => {
-        if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) return;
+    const changes = [];
+    for (const fileUri of files) {
+        if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) continue;
 
         const raw = await readTextDocumentOrFile(fileUri);
-        if (raw == null) return;
+        if (raw == null) continue;
 
         const calls = translationService.findTranslationCalls(raw).filter(c => c.methodName === oldKey);
-        if (calls.length === 0) return;
+        if (calls.length === 0) continue;
 
         const newContent = _applyReplacementsToText(raw, calls, newKey);
-        await stageOrWriteTextFile(edit, fileUri, newContent);
-    }));
+        changes.push({
+            uri: fileUri,
+            oldText: raw,
+            newText: newContent,
+            reason: `rename source usages in ${path.basename(fileUri.fsPath)}`,
+        });
+    }
+
+    return changes;
 }
 
 /**
@@ -225,4 +234,4 @@ function _isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
 }
 
-module.exports = { buildRenameEdit, validateRenameKey };
+module.exports = { buildRenameChanges, validateRenameKey };

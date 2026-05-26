@@ -2,7 +2,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const { deleteJsonKey, flattenJsonKeys, getNestedValue, stringifyJsonLike } = require('../utils/json-utils');
-const { readTextDocumentOrFile, stageOrWriteTextFile } = require('../utils/text-edits');
+const { readTextDocumentOrFile } = require('../utils/text-edits');
 
 const SOURCE_GLOB = '**/*.{js,jsx,ts,tsx,svelte}';
 const SOURCE_EXCLUDE_GLOB = '{node_modules,.git,paraglide}/**';
@@ -46,13 +46,14 @@ async function createDeleteKeyPlan(projectRoot, key, translationService, localeS
 }
 
 /**
- * @param {vscode.WorkspaceEdit} edit
  * @param {DeleteKeyPlan} plan
- * @returns {Promise<void>}
+ * @returns {Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>}
  */
-async function applyDeleteKeyPlan(edit, plan) {
-    await inlineSourceUsages(edit, plan);
-    await deleteFromLocaleFiles(edit, plan);
+function buildDeleteChanges(plan) {
+    return [
+        ...inlineSourceUsages(plan),
+        ...deleteFromLocaleFiles(plan),
+    ];
 }
 
 /**
@@ -229,33 +230,41 @@ async function findSourceUsageFiles(projectRoot, key, translationService) {
 }
 
 /**
- * @param {vscode.WorkspaceEdit} edit
  * @param {DeleteKeyPlan} plan
- * @returns {Promise<void>}
+ * @returns {Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>}
  */
-async function inlineSourceUsages(edit, plan) {
+function inlineSourceUsages(plan) {
     if (plan.sourceFiles.length === 0 || typeof plan.inlineValue !== 'string') {
-        return;
+        return [];
     }
 
     const replacement = JSON.stringify(plan.inlineValue);
-    await Promise.all(plan.sourceFiles.map(async file => {
+    return plan.sourceFiles.map(file => {
         const content = applyCallReplacements(file.raw, file.calls, replacement);
-        await stageOrWriteTextFile(edit, file.uri, content);
-    }));
+        return {
+            uri: file.uri,
+            oldText: file.raw,
+            newText: content,
+            reason: `inline deleted key in ${path.basename(file.uri.fsPath)}`,
+        };
+    });
 }
 
 /**
- * @param {vscode.WorkspaceEdit} edit
  * @param {DeleteKeyPlan} plan
- * @returns {Promise<void>}
+ * @returns {Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>}
  */
-async function deleteFromLocaleFiles(edit, plan) {
-    await Promise.all(plan.localeFiles.map(async file => {
+function deleteFromLocaleFiles(plan) {
+    return plan.localeFiles.map(file => {
         const updated = deleteJsonKey(file.json, plan.key);
         const content = stringifyJsonLike(file.raw, updated);
-        await stageOrWriteTextFile(edit, file.uri, content);
-    }));
+        return {
+            uri: file.uri,
+            oldText: file.raw,
+            newText: content,
+            reason: `delete locale key in ${path.basename(file.uri.fsPath)}`,
+        };
+    });
 }
 
 /**
@@ -384,7 +393,7 @@ function escapeRegex(value) {
 
 module.exports = {
     applyCallReplacements,
-    applyDeleteKeyPlan,
+    buildDeleteChanges,
     buildUsageSearchRegex,
     collectLocaleKeys,
     countSourceUsages,

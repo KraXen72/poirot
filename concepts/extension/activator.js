@@ -6,16 +6,16 @@ const { SidebarTreeProvider } = require('../sidebar/provider');
 const { LocaleService } = require('../locale/service');
 const { TranslationService } = require('../translation/service');
 const { ExtractionService } = require('../extraction/service');
-const { buildRenameEdit, validateRenameKey } = require('../providers/renameProvider');
+const { buildRenameChanges, validateRenameKey } = require('../providers/renameProvider');
 const {
-    applyDeleteKeyPlan,
+    buildDeleteChanges,
     collectLocaleKeys,
     countSourceUsages,
     createDeleteKeyPlan,
     openUsageSearch,
 } = require('../providers/deleteProvider');
 const { getKeyAtPosition, getProjectRoot } = require('../utils/i18n-detection');
-const { hasWorkspaceEdits } = require('../utils/text-edits');
+const { applyTextFileChanges } = require('../utils/text-edits');
 
 class ExtensionActivator {
     constructor() {
@@ -349,16 +349,18 @@ class ExtensionActivator {
             });
             if (!newKey || newKey === oldKey) return;
 
-            const edit = new vscode.WorkspaceEdit();
+            let changes;
             try {
-                await buildRenameEdit(edit, document, oldKey, newKey, this.translationService, this.localeService);
+                changes = await buildRenameChanges(document, oldKey, newKey, this.translationService, this.localeService);
             } catch (err) {
                 vscode.window.showErrorMessage(`Rename failed: ${err.message}`);
                 return;
             }
 
-            if (hasWorkspaceEdits(edit) && !await vscode.workspace.applyEdit(edit)) {
-                vscode.window.showErrorMessage('ElementaryWatson: workspace.applyEdit failed — no changes were made.');
+            try {
+                await applyTextFileChanges(changes);
+            } catch (err) {
+                vscode.window.showErrorMessage(`Rename failed: ${formatTransactionError(err)}`);
                 return;
             }
 
@@ -451,16 +453,11 @@ class ExtensionActivator {
         );
         if (confirmed !== 'Delete Translation Key') return;
 
-        const edit = new vscode.WorkspaceEdit();
+        const changes = buildDeleteChanges(plan);
         try {
-            await applyDeleteKeyPlan(edit, plan);
+            await applyTextFileChanges(changes);
         } catch (error) {
-            vscode.window.showErrorMessage(`Delete failed: ${error.message}`);
-            return;
-        }
-
-        if (hasWorkspaceEdits(edit) && !await vscode.workspace.applyEdit(edit)) {
-            vscode.window.showErrorMessage('ElementaryWatson: workspace.applyEdit failed. Some saved files may already have been updated.');
+            vscode.window.showErrorMessage(`Delete failed: ${formatTransactionError(error)}`);
             return;
         }
 
@@ -701,4 +698,24 @@ class ExtensionActivator {
     }
 }
 
-module.exports = { ExtensionActivator }; 
+/**
+ * @param {unknown} error
+ * @returns {string}
+ */
+function formatTransactionError(error) {
+    if (!(error instanceof Error)) {
+        return String(error);
+    }
+
+    if (error.phase === 'forward' && error.rollbackSucceeded) {
+        return `${error.message}`;
+    }
+
+    if (error.phase === 'rollback') {
+        return `${error.message} Review the reported file manually before retrying.`;
+    }
+
+    return error.message;
+}
+
+module.exports = { ExtensionActivator };
