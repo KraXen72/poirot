@@ -4,3 +4,4 @@ node_modules
 .env
 repomix-output.xml
 .devcontainer.json
+/*.tgz
