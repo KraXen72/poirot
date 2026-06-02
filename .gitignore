@@ -6,3 +6,4 @@ out/
 *.d.ts
 *.js.map
 *.d.ts.map
+/repomix-output.xml
