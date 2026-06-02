@@ -164,6 +164,47 @@ suite('validateRenameKey', () => {
     });
 });
 
+suite('human-key generator', () => {
+    const { generateHumanKey } = require('../concepts/utils/human-key');
+    const wordlists = require('../concepts/utils/human-key-wordlists.json');
+    const adjectives = new Set(wordlists.adjectives);
+    const firstWords = new Set([...wordlists.adjectives, ...wordlists.colors]);
+    const nouns = new Set(wordlists.nouns);
+    const verbs = new Set(wordlists.verbs);
+
+    test('generates four lowercase underscore-separated words', () => {
+        for (let i = 0; i < 25; i++) {
+            assert.match(generateHumanKey(), /^[a-z]+_[a-z]+_[a-z]+_[a-z]+$/);
+        }
+    });
+
+    test('uses words from the bundled wordlists', () => {
+        for (let i = 0; i < 25; i++) {
+            const [first, second, noun, verb] = generateHumanKey().split('_');
+
+            assert.ok(firstWords.has(first), `${first} should be an adjective or color`);
+            assert.ok(adjectives.has(second), `${second} should be an adjective`);
+            assert.ok(nouns.has(noun), `${noun} should be a noun`);
+            assert.ok(verbs.has(verb), `${verb} should be a verb`);
+        }
+    });
+
+    test('does not repeat the adjective slots in one key', () => {
+        for (let i = 0; i < 25; i++) {
+            const [first, second] = generateHumanKey().split('_');
+
+            assert.notStrictEqual(first, second);
+        }
+    });
+
+    test('has enough source words for a low-collision id space', () => {
+        assert.ok(wordlists.adjectives.length > 500);
+        assert.ok(wordlists.colors.length > 10);
+        assert.ok(wordlists.nouns.length > 1000);
+        assert.ok(wordlists.verbs.length > 500);
+    });
+});
+
 suite('text-edits transaction helper', () => {
     const { applyTextFileChanges } = require('../concepts/utils/text-edits');
 

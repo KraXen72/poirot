@@ -1,11 +1,11 @@
 const vscode = require('vscode');
 const fs = require('fs/promises');
 const path = require('path');
-const { humanId } = require('human-id');
 const { LocaleService } = require('../locale/service');
 const { TranslationService } = require('../translation/service');
 const { deepClone, setNestedValue, stringifyJsonLike } = require('../utils/json-utils');
 const { formatKeyCall } = require('../utils/key-format');
+const { generateHumanKey } = require('../utils/human-key');
 const { stageOrWriteDocumentRange } = require('../utils/text-edits');
 
 /**
@@ -232,27 +232,17 @@ class ExtractionService {
      * @param {Record<string, string>} existingTranslations existing translations
      */
     async generateUniqueKey(existingTranslations) {
-        // Try to generate unique key up to 10 times
-        for (let i = 0; i < 10; i++) {
-            const key = humanId({
-                separator: '_',
-                capitalize: false,
-                adjectiveCount: 2,
-                addAdverb: false,
-            });
+        // Try to generate unique key up to 50 times
+        for (let i = 0; i < 50; i++) {
+            const key = generateHumanKey();
 
-            if (!existingTranslations[key]) {
+            if (!Object.prototype.hasOwnProperty.call(existingTranslations, key)) {
                 return key;
             }
         }
 
-            // If we couldn't generate a unique key, add a timestamp
-        const key = humanId({
-            separator: '_',
-            capitalize: false,
-            adjectiveCount: 2,
-            addAdverb: false,
-        });
+        // If we couldn't generate a unique key, add a timestamp
+        const key = generateHumanKey();
         return `${key}_${Date.now()}`;
     }
 
