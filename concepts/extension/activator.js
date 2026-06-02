@@ -14,7 +14,7 @@ const {
     createDeleteKeyPlan,
     openUsageSearch,
 } = require('../providers/deleteProvider');
-const { getKeyAtPosition, getProjectRoot } = require('../utils/i18n-detection');
+const { getKeyAtPosition, getKeyRangeAtPosition, getProjectRoot } = require('../utils/i18n-detection');
 const { applyTextFileChanges } = require('../utils/text-edits');
 
 class ExtensionActivator {
@@ -30,7 +30,9 @@ class ExtensionActivator {
         this.documentUpdateTimeouts = new Map(); // Map of document URI to timeout
         // File watchers for translation files
         this.translationFileWatchers = [];
-        this._pendingRenameUris = null;
+        this._isApplyingRename = false;
+        this._renameSuppressedUris = new Set();
+        this._renameSuppressionTimeout = null;
     }
 
     /**
@@ -104,24 +106,43 @@ class ExtensionActivator {
         return false;
     }
 
-    beginRename(uris) {
-        this._pendingRenameUris = new Set(uris);
-    }
+    beginRenameRefreshSuppression(uris) {
+        this._isApplyingRename = true;
+        this._renameSuppressedUris = new Set(uris);
 
-    _isPendingRename(uri) {
-        return this._pendingRenameUris !== null && this._pendingRenameUris.has(uri);
-    }
+        if (this._renameSuppressionTimeout) {
+            clearTimeout(this._renameSuppressionTimeout);
+            this._renameSuppressionTimeout = null;
+        }
 
-    async _acknowledgeRenameUri(uri) {
-        if (!this._pendingRenameUris?.has(uri)) return;
-        this._pendingRenameUris.delete(uri);
-        if (this._pendingRenameUris.size === 0) {
-            await this._postRenameRefresh();
+        for (const uri of uris) {
+            const timeout = this.documentUpdateTimeouts.get(uri);
+            if (timeout) {
+                clearTimeout(timeout);
+                this.documentUpdateTimeouts.delete(uri);
+            }
         }
     }
 
-    async _postRenameRefresh() {
-        await this.processActiveEditor();
+    endRenameRefreshSuppression() {
+        this._isApplyingRename = false;
+        this._renameSuppressionTimeout = setTimeout(() => {
+            this._renameSuppressedUris.clear();
+            this._renameSuppressionTimeout = null;
+        }, this.getDebounceDelay() + 100);
+    }
+
+    shouldSuppressRenameRefresh(uri) {
+        if (this._isApplyingRename) {
+            return true;
+        }
+
+        if (!this._renameSuppressedUris.has(uri)) {
+            return false;
+        }
+
+        this._renameSuppressedUris.delete(uri);
+        return true;
     }
 
     /**
@@ -349,22 +370,45 @@ class ExtensionActivator {
             });
             if (!newKey || newKey === oldKey) return;
 
-            let changes;
-            try {
-                changes = await buildRenameChanges(document, oldKey, newKey, this.translationService, this.localeService);
-            } catch (err) {
-                vscode.window.showErrorMessage(`Rename failed: ${err.message}`);
-                return;
-            }
+            const keyRange = getKeyRangeAtPosition(document, selection.active, this.translationService);
+            const cursorState = {
+                editor,
+                documentUri: document.uri.toString(),
+                keyStart: document.offsetAt(keyRange.start),
+                keyEnd: document.offsetAt(keyRange.end),
+                cursorOffset: Math.max(0, document.offsetAt(selection.active) - document.offsetAt(keyRange.start)),
+            };
 
             try {
-                await applyTextFileChanges(changes);
+                await vscode.window.withProgress(
+                    {
+                        location: vscode.ProgressLocation.Notification,
+                        title: `Renaming translation key "${oldKey}"`,
+                        cancellable: false,
+                    },
+                    async (progress) => {
+                        progress.report({ message: 'Finding usages...' });
+                        const changes = await buildRenameChanges(document, oldKey, newKey, this.translationService, this.localeService);
+                        const changedUris = changes.map(change => change.uri.toString());
+
+                        this.beginRenameRefreshSuppression(changedUris);
+                        try {
+                            progress.report({ message: 'Applying changes...' });
+                            await applyTextFileChanges(changes);
+
+                            restoreRenameCursor(cursorState, changes, newKey);
+
+                            progress.report({ message: 'Refreshing labels...' });
+                            await this.processActiveEditor();
+                        } finally {
+                            this.endRenameRefreshSuppression();
+                        }
+                    },
+                );
             } catch (err) {
                 vscode.window.showErrorMessage(`Rename failed: ${formatTransactionError(err)}`);
                 return;
             }
-
-            await this.processActiveEditor();
         });
         this.disposables.push(cmd);
     }
@@ -504,6 +548,9 @@ class ExtensionActivator {
 
         const documentChangeDisposable = vscode.workspace.onDidChangeTextDocument(async (event) => {
             const document = event.document;
+            if (this.shouldSuppressRenameRefresh(document.uri.toString())) {
+                return;
+            }
             
             // Check if real-time updates are enabled
             if (!this.isRealtimeUpdatesEnabled()) {
@@ -607,6 +654,10 @@ class ExtensionActivator {
             );
 
             const handleChange = async (uri) => {
+                if (this.shouldSuppressRenameRefresh(uri.toString())) {
+                    return;
+                }
+
                 console.log(`\n📝 Translation file changed: ${path.basename(uri.fsPath)}`);
                 const activeEditor = vscode.window.activeTextEditor;
                 if (activeEditor && this.editorService.isSupportedDocument(activeEditor.document)) {
@@ -689,6 +740,10 @@ class ExtensionActivator {
             clearTimeout(timeout);
         }
         this.documentUpdateTimeouts.clear();
+        if (this._renameSuppressionTimeout) {
+            clearTimeout(this._renameSuppressionTimeout);
+            this._renameSuppressionTimeout = null;
+        }
         
         // Dispose of translation file watchers
         this.disposeTranslationFileWatchers();
@@ -716,6 +771,46 @@ function formatTransactionError(error) {
     }
 
     return error.message;
+}
+
+/**
+ * @param {{ editor: vscode.TextEditor, documentUri: string, keyStart: number, keyEnd: number, cursorOffset: number }} cursorState
+ * @param {Array<{ uri: vscode.Uri, edits?: Array<{ start: number, end: number, replacement: string }> }>} changes
+ * @param {string} newKey
+ */
+function restoreRenameCursor(cursorState, changes, newKey) {
+    const activeEditor = vscode.window.activeTextEditor;
+    if (!activeEditor || activeEditor !== cursorState.editor || activeEditor.document.uri.toString() !== cursorState.documentUri) {
+        return;
+    }
+
+    const activeChange = changes.find(change => change.uri.toString() === cursorState.documentUri);
+    const edits = activeChange?.edits;
+    if (!Array.isArray(edits)) {
+        return;
+    }
+
+    const containingEdit = edits.find(edit => cursorState.keyStart >= edit.start && cursorState.keyEnd <= edit.end);
+    if (!containingEdit) {
+        return;
+    }
+
+    const keyOffsetInReplacement = containingEdit.replacement.indexOf(newKey);
+    if (keyOffsetInReplacement < 0) {
+        return;
+    }
+
+    const priorDelta = edits.reduce((delta, edit) => {
+        if (edit.end <= containingEdit.start) {
+            return delta + edit.replacement.length - (edit.end - edit.start);
+        }
+        return delta;
+    }, 0);
+    const keyStart = containingEdit.start + priorDelta + keyOffsetInReplacement;
+    const cursorOffset = Math.min(cursorState.cursorOffset, newKey.length);
+    const position = activeEditor.document.positionAt(keyStart + cursorOffset);
+    activeEditor.selection = new vscode.Selection(position, position);
+    activeEditor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.Default);
 }
 
 module.exports = { ExtensionActivator };

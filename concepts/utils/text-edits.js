@@ -50,11 +50,11 @@ async function readTextDocumentOrFile(uri) {
 }
 
 /**
- * Applies planned full-file replacements sequentially. If a later operation fails,
+ * Applies planned text replacements sequentially. If a later operation fails,
  * previously applied changes are rolled back only while their content/version still
  * matches what this transaction wrote.
  *
- * @param {Array<{ uri: vscode.Uri, oldText: string, newText: string, reason?: string }>} changes
+ * @param {Array<{ uri: vscode.Uri, oldText: string, newText: string, edits?: Array<{ start: number, end: number, replacement: string }>, reason?: string }>} changes
  * @returns {Promise<{ applied: number, skipped: number }>}
  */
 async function applyTextFileChanges(changes) {
@@ -79,13 +79,17 @@ async function applyTextFileChanges(changes) {
 }
 
 /**
- * @param {{ uri: vscode.Uri, oldText: string, newText: string, reason?: string }} change
+ * @param {{ uri: vscode.Uri, oldText: string, newText: string, edits?: Array<{ start: number, end: number, replacement: string }>, reason?: string }} change
  * @returns {Promise<() => Promise<void>>}
  */
 async function applyOneTextFileChange(change) {
     const openDocument = getOpenTextDocument(change.uri);
+    if (openDocument && Array.isArray(change.edits)) {
+        return applyOpenDocumentRangeChange(openDocument, change);
+    }
+
     if (openDocument?.isDirty) {
-        return applyDirtyDocumentChange(openDocument, change);
+        return applyOpenDocumentFullChange(openDocument, change);
     }
 
     return applyDirectWriteChange(change);
@@ -96,13 +100,58 @@ async function applyOneTextFileChange(change) {
  * @param {{ uri: vscode.Uri, oldText: string, newText: string, reason?: string }} change
  * @returns {Promise<() => Promise<void>>}
  */
-async function applyDirtyDocumentChange(document, change) {
+async function applyOpenDocumentFullChange(document, change) {
     if (document.getText() !== change.oldText) {
         throw new Error(buildChangedBeforeApplyMessage(change));
     }
 
     const edit = new vscode.WorkspaceEdit();
     edit.replace(change.uri, fullDocumentRange(document, change.oldText), change.newText);
+
+    const success = await vscode.workspace.applyEdit(edit);
+    if (!success) {
+        throw new Error(`Could not apply edit for ${describeChange(change)}.`);
+    }
+
+    const changedDocument = getOpenTextDocument(change.uri);
+    if (!changedDocument || changedDocument.getText() !== change.newText) {
+        throw new Error(`Could not verify edit for ${describeChange(change)}.`);
+    }
+
+    const versionAfterEdit = changedDocument.version;
+    return async () => {
+        const currentDocument = getOpenTextDocument(change.uri);
+        if (!currentDocument || currentDocument.version !== versionAfterEdit || currentDocument.getText() !== change.newText) {
+            throw new Error(`Manual resolution required for ${describeChange(change)}; the dirty buffer changed after ElementaryWatson edited it.`);
+        }
+
+        const rollbackEdit = new vscode.WorkspaceEdit();
+        rollbackEdit.replace(change.uri, fullDocumentRange(currentDocument, change.newText), change.oldText);
+        const rollbackSuccess = await vscode.workspace.applyEdit(rollbackEdit);
+        if (!rollbackSuccess) {
+            throw new Error(`Could not rollback edit for ${describeChange(change)}.`);
+        }
+    };
+}
+
+/**
+ * @param {vscode.TextDocument} document
+ * @param {{ uri: vscode.Uri, oldText: string, newText: string, edits: Array<{ start: number, end: number, replacement: string }>, reason?: string }} change
+ * @returns {Promise<() => Promise<void>>}
+ */
+async function applyOpenDocumentRangeChange(document, change) {
+    if (document.getText() !== change.oldText) {
+        throw new Error(buildChangedBeforeApplyMessage(change));
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    for (const rangeEdit of change.edits) {
+        edit.replace(
+            change.uri,
+            new vscode.Range(document.positionAt(rangeEdit.start), document.positionAt(rangeEdit.end)),
+            rangeEdit.replacement,
+        );
+    }
 
     const success = await vscode.workspace.applyEdit(edit);
     if (!success) {

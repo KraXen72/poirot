@@ -25,76 +25,39 @@ function fullRange(document) {
     return new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
 }
 
-suite('ExtensionActivator rename tracking', () => {
-    // We test the pending-rename state machine in isolation,
-    // without needing a real VS Code window.
-
+suite('ExtensionActivator rename refresh suppression', () => {
     /** @returns {import('../concepts/extension/activator').ExtensionActivator} */
     function makeActivator() {
-        // Stub out every vscode dependency so we can run without the host.
         const { ExtensionActivator } = require('../concepts/extension/activator');
         return new ExtensionActivator();
     }
 
-    test('beginRename adds URIs to pending set', () => {
+    test('suppresses known rename URIs', () => {
         const a = makeActivator();
-        a.beginRename(['file:///a.json', 'file:///b.ts']);
-        assert.ok(a._isPendingRename('file:///a.json'));
-        assert.ok(a._isPendingRename('file:///b.ts'));
-        assert.ok(!a._isPendingRename('file:///c.ts'));
+        a.beginRenameRefreshSuppression(['file:///a.json', 'file:///b.ts']);
+
+        assert.strictEqual(a.shouldSuppressRenameRefresh('file:///a.json'), true);
+        assert.strictEqual(a.shouldSuppressRenameRefresh('file:///b.ts'), true);
+        assert.strictEqual(a.shouldSuppressRenameRefresh('file:///c.ts'), true, 'all refreshes are suppressed during apply');
     });
 
-    test('acknowledging all URIs empties the pending set', async () => {
+    test('late rename URI events are skipped once after apply', () => {
         const a = makeActivator();
-        // Prevent the real _postRenameRefresh from trying to call vscode APIs.
-        a._postRenameRefresh = async () => {};
+        a.beginRenameRefreshSuppression(['file:///a.json']);
+        a._isApplyingRename = false;
 
-        a.beginRename(['file:///a.json', 'file:///b.ts']);
-        await a._acknowledgeRenameUri('file:///a.json');
-        assert.ok(a._isPendingRename('file:///b.ts'), 'b.ts still pending');
-        assert.ok(!a._isPendingRename('file:///a.json'), 'a.json removed');
-
-        await a._acknowledgeRenameUri('file:///b.ts');
-        assert.strictEqual(a._pendingRenameUris.size, 0, 'set empty after all acknowledged');
+        assert.strictEqual(a.shouldSuppressRenameRefresh('file:///a.json'), true);
+        assert.strictEqual(a.shouldSuppressRenameRefresh('file:///a.json'), false);
     });
 
-    test('_postRenameRefresh is called exactly once after all URIs acknowledged', async () => {
+    test('beginRenameRefreshSuppression clears pending debounced refreshes for changed URIs', () => {
         const a = makeActivator();
-        let callCount = 0;
-        a._postRenameRefresh = async () => { callCount++; };
+        const timeout = setTimeout(() => {}, 1000);
+        a.documentUpdateTimeouts.set('file:///a.ts', timeout);
 
-        a.beginRename(['file:///x.json', 'file:///y.json']);
-        await a._acknowledgeRenameUri('file:///x.json');
-        assert.strictEqual(callCount, 0, 'not called yet');
-        await a._acknowledgeRenameUri('file:///y.json');
-        assert.strictEqual(callCount, 1, 'called exactly once');
-    });
+        a.beginRenameRefreshSuppression(['file:///a.ts']);
 
-    test('acknowledging an unknown URI is a no-op', async () => {
-        const a = makeActivator();
-        let callCount = 0;
-        a._postRenameRefresh = async () => { callCount++; };
-
-        a.beginRename(['file:///a.json']);
-        await a._acknowledgeRenameUri('file:///not-in-set.json');
-        assert.strictEqual(a._pendingRenameUris.size, 1, 'still one pending');
-        assert.strictEqual(callCount, 0);
-    });
-
-    test('second rename works after first completes', async () => {
-        const a = makeActivator();
-        const calls = [];
-        a._postRenameRefresh = async () => { calls.push(Date.now()); };
-
-        // First rename
-        a.beginRename(['file:///a.json']);
-        await a._acknowledgeRenameUri('file:///a.json');
-        assert.strictEqual(calls.length, 1);
-
-        // Second rename — pending set must be clear from previous
-        a.beginRename(['file:///a.json']);
-        await a._acknowledgeRenameUri('file:///a.json');
-        assert.strictEqual(calls.length, 2, 'second rename also triggers refresh');
+        assert.strictEqual(a.documentUpdateTimeouts.has('file:///a.ts'), false);
     });
 });
 
@@ -161,6 +124,43 @@ suite('validateRenameKey', () => {
 
     test('rejects empty string', () => {
         assert.ok(typeof validateRenameKey('') === 'string');
+    });
+});
+
+suite('renameProvider source edits', () => {
+    const {
+        applySourceReplacements,
+        buildSourceRenameEdits,
+    } = require('../concepts/providers/renameProvider');
+
+    test('renames flat calls with range edits', () => {
+        const text = 'const a = m.title();';
+        const edits = buildSourceRenameEdits(text, [
+            { methodName: 'title', start: 10, end: 19, keyType: 'flat' },
+        ], 'heading');
+
+        assert.deepStrictEqual(edits, [{ start: 12, end: 17, replacement: 'heading' }]);
+        assert.strictEqual(applySourceReplacements(text, edits), 'const a = m.heading();');
+    });
+
+    test('renames flat calls to nested bracket calls', () => {
+        const text = 'const a = m.title();';
+        const edits = buildSourceRenameEdits(text, [
+            { methodName: 'title', start: 10, end: 19, keyType: 'flat' },
+        ], 'page.title');
+
+        assert.deepStrictEqual(edits, [{ start: 11, end: 17, replacement: '["page.title"]' }]);
+        assert.strictEqual(applySourceReplacements(text, edits), 'const a = m["page.title"]();');
+    });
+
+    test('renames quoted nested calls without changing quote style', () => {
+        const text = "const a = m['page.title']();";
+        const edits = buildSourceRenameEdits(text, [
+            { methodName: 'page.title', start: 10, end: 27, keyType: 'nested' },
+        ], 'page.heading');
+
+        assert.deepStrictEqual(edits, [{ start: 13, end: 23, replacement: 'page.heading' }]);
+        assert.strictEqual(applySourceReplacements(text, edits), "const a = m['page.heading']();");
     });
 });
 
@@ -245,6 +245,35 @@ suite('text-edits transaction helper', () => {
 
         const cleanup = new vscode.WorkspaceEdit();
         cleanup.replace(uri, fullRange(document), 'old');
+        assert.strictEqual(await vscode.workspace.applyEdit(cleanup), true);
+        assert.strictEqual(await document.save(), true);
+    });
+
+    test('open files can use range edits without writing to disk', async () => {
+        const uri = await makeTempFile('const a = m.title();', '.js');
+        const document = await vscode.workspace.openTextDocument(uri);
+
+        let applyEditCalls = 0;
+        const originalApplyEdit = vscode.workspace.applyEdit;
+        await withPatchedWorkspaceMethod('applyEdit', async edit => {
+            applyEditCalls++;
+            return originalApplyEdit.call(vscode.workspace, edit);
+        }, async () => {
+            await applyTextFileChanges([{
+                uri,
+                oldText: 'const a = m.title();',
+                newText: 'const a = m.heading();',
+                edits: [{ start: 12, end: 17, replacement: 'heading' }],
+                reason: 'source range edit',
+            }]);
+        });
+
+        assert.strictEqual(applyEditCalls, 1);
+        assert.strictEqual(document.getText(), 'const a = m.heading();');
+        assert.strictEqual(await fs.promises.readFile(uri.fsPath, 'utf8'), 'const a = m.title();');
+
+        const cleanup = new vscode.WorkspaceEdit();
+        cleanup.replace(uri, fullRange(document), 'const a = m.title();');
         assert.strictEqual(await vscode.workspace.applyEdit(cleanup), true);
         assert.strictEqual(await document.save(), true);
     });

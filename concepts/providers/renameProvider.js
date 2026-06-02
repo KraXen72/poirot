@@ -4,9 +4,12 @@ const vscode = require('vscode');
 const path = require('path');
 const { getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
 const { getNestedValue, stringifyJsonLike, renameJsonKey } = require('../utils/json-utils');
-const { readTextDocumentOrFile } = require('../utils/text-edits');
+const { getOpenTextDocument, readTextDocumentOrFile } = require('../utils/text-edits');
 
 const KEY_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_.]*$/;
+const SOURCE_INCLUDE_GLOB = '**/*.{js,jsx,ts,tsx,svelte}';
+const SOURCE_EXCLUDE_GLOB = '{node_modules,.git,paraglide}/**';
+const PLANNING_CONCURRENCY = 24;
 
 /**
  * Validates a new translation key against the allowed character pattern.
@@ -30,7 +33,7 @@ function validateRenameKey(newKey) {
  * @param {string} newKey - The new dot-separated translation key.
  * @param {object} translationService - A service object that must expose a `findTranslationCalls(text: string)` method.
  * @param {object} localeService - A service object that must expose a `getLocaleFilePaths(projectRoot: string)` method.
- * @returns {Promise<Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>>}
+ * @returns {Promise<Array<{ uri: vscode.Uri, oldText: string, newText: string, edits?: Array<{ start: number, end: number, replacement: string }>, reason: string }>>}
  * @throws {Error} Throws a user-facing error if the project root cannot be found or if the operation fails.
  */
 async function buildRenameChanges(activeDocument, oldKey, newKey, translationService, localeService) {
@@ -39,10 +42,12 @@ async function buildRenameChanges(activeDocument, oldKey, newKey, translationSer
     const projectRoot = getProjectRoot(activeDocument);
     if (!projectRoot) throw new Error('Could not find inlang project root for this file.');
 
-    return [
-        ...await _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService),
-        ...await _renameInSourceFiles(projectRoot, oldKey, newKey, translationService),
-    ];
+    const [localeChanges, sourceChanges] = await Promise.all([
+        _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService),
+        _renameInSourceFiles(projectRoot, oldKey, newKey, translationService),
+    ]);
+
+    return [...localeChanges, ...sourceChanges];
 }
 
 /**
@@ -85,21 +90,21 @@ async function _renameInLocaleFiles(projectRoot, oldKey, newKey, localeService) 
  */
 async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
     const localePaths = await getLocaleFilePaths(projectRoot, localeService);
-    const files = [];
-    for (const filePath of localePaths) {
+    const files = (await Promise.all(localePaths.map(async filePath => {
         const uri = vscode.Uri.file(filePath);
         const raw = await readTextDocumentOrFile(uri);
-        if (raw == null) continue;
+        if (raw == null) return null;
         const json = _parseJson(raw);
-        if (json == null) continue;
-        files.push({
+        if (json == null) return null;
+        return {
             uri,
             raw,
             json,
             hasOldKey: _isKeyPresent(json, oldKey),
             hasNewKey: _isKeyPresent(json, newKey),
-        });
-    }
+        };
+    }))).filter(Boolean);
+
     for (const f of files) {
         if (f.hasNewKey) {
             throw new Error(`Key "${newKey}" already exists in ${path.basename(f.uri.fsPath)}. Rename aborted.`);
@@ -119,31 +124,33 @@ async function _loadLocaleFiles(projectRoot, oldKey, newKey, localeService) {
  * @returns {Promise<Array<{ uri: vscode.Uri, oldText: string, newText: string, reason: string }>>}
  */
 async function _renameInSourceFiles(projectRoot, oldKey, newKey, translationService) {
-    const files = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(projectRoot, '**/*.{js,jsx,ts,tsx,svelte}'),
-        new vscode.RelativePattern(projectRoot, '{node_modules,.git,paraglide}/**'),
-    );
-
-    const changes = [];
-    for (const fileUri of files) {
-        if (fileUri.fsPath.includes('paraglide') || fileUri.fsPath.includes('node_modules')) continue;
+    const files = await _findSourceCandidateFiles(projectRoot, oldKey);
+    const changes = await mapConcurrent(files, PLANNING_CONCURRENCY, async fileUri => {
+        if (_isExcludedSourcePath(fileUri.fsPath)) return null;
 
         const raw = await readTextDocumentOrFile(fileUri);
-        if (raw == null) continue;
+        if (raw == null) return null;
 
         const calls = translationService.findTranslationCalls(raw).filter(c => c.methodName === oldKey);
-        if (calls.length === 0) continue;
+        if (calls.length === 0) return null;
 
-        const newContent = _applyReplacementsToText(raw, calls, newKey);
-        changes.push({
+        const replacements = buildSourceRenameEdits(raw, calls, newKey);
+        const newContent = applySourceReplacements(raw, replacements);
+        const change = {
             uri: fileUri,
             oldText: raw,
             newText: newContent,
             reason: `rename source usages in ${path.basename(fileUri.fsPath)}`,
-        });
-    }
+        };
 
-    return changes;
+        if (getOpenTextDocument(fileUri)) {
+            change.edits = replacements;
+        }
+
+        return change;
+    });
+
+    return changes.filter(Boolean);
 }
 
 /**
@@ -155,15 +162,23 @@ async function _renameInSourceFiles(projectRoot, oldKey, newKey, translationServ
  * @param {string} newKey - The replacement key string.
  * @returns {string} The modified text content.
  */
-function _applyReplacementsToText(text, calls, newKey) {
-    // Sort descending by start offset so each splice doesn't shift later offsets.
-    const sorted = calls.slice().sort((a, b) => b.start - a.start);
+function applySourceReplacements(text, replacements) {
+    const sorted = replacements.slice().sort((a, b) => b.start - a.start);
     let result = text;
-    for (const call of sorted) {
-        const { charStart, charEnd, replacement } = _buildCharReplacement(result, call, newKey);
-        result = result.slice(0, charStart) + replacement + result.slice(charEnd);
+    for (const edit of sorted) {
+        result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
     }
     return result;
+}
+
+/**
+ * @param {string} text
+ * @param {Array<{keyType: string, start: number, end: number, methodName: string}>} calls
+ * @param {string} newKey
+ * @returns {Array<{ start: number, end: number, replacement: string }>}
+ */
+function buildSourceRenameEdits(text, calls, newKey) {
+    return calls.map(call => _buildCharReplacement(text, call, newKey));
 }
 
 /**
@@ -173,22 +188,22 @@ function _applyReplacementsToText(text, calls, newKey) {
  * @param {string} text - The source text containing the call.
  * @param {{keyType: string, start: number, end: number, methodName: string}} call - The call descriptor.
  * @param {string} newKey - The new key value to insert.
- * @returns {{ charStart: number, charEnd: number, replacement: string }} The range details for the replacement.
+ * @returns {{ start: number, end: number, replacement: string }} The range details for the replacement.
  */
 function _buildCharReplacement(text, call, newKey) {
     if (call.keyType === 'flat') {
         if (newKey.includes('.')) {
             // m.oldKey()  ->  m["newKey"]()  : replace from the dot through end of method name
             return {
-                charStart: call.start + 1,
-                charEnd:   call.start + 2 + call.methodName.length,
+                start: call.start + 1,
+                end:   call.start + 2 + call.methodName.length,
                 replacement: `["${newKey}"]`,
             };
         } else {
             // m.oldKey()  ->  m.newKey()  : replace just the method name portion
             return {
-                charStart: call.start + 2,
-                charEnd:   call.start + 2 + call.methodName.length,
+                start: call.start + 2,
+                end:   call.start + 2 + call.methodName.length,
                 replacement: newKey,
             };
         }
@@ -196,14 +211,14 @@ function _buildCharReplacement(text, call, newKey) {
 
     // nested: m["oldKey"]()
     const matchText = text.slice(call.start, call.end);
-    const nestedMatch = /\["([^\]]+)"\]/.exec(matchText);
+    const nestedMatch = /\[(["'`])([^"'`]+)\1\]/.exec(matchText);
     if (!nestedMatch) {
-        return { charStart: call.start, charEnd: call.end, replacement: newKey };
+        return { start: call.start, end: call.end, replacement: newKey };
     }
-    const keyOffset = matchText.indexOf(nestedMatch[1]);
+    const keyOffset = matchText.indexOf(nestedMatch[2]);
     return {
-        charStart: call.start + keyOffset,
-        charEnd:   call.start + keyOffset + nestedMatch[1].length,
+        start: call.start + keyOffset,
+        end:   call.start + keyOffset + nestedMatch[2].length,
         replacement: newKey,
     };
 }
@@ -234,4 +249,102 @@ function _isKeyPresent(obj, keyPath) {
     return getNestedValue(obj, keyPath.split('.')) !== undefined;
 }
 
-module.exports = { buildRenameChanges, validateRenameKey };
+/**
+ * @param {string} projectRoot
+ * @param {string} oldKey
+ * @returns {Promise<vscode.Uri[]>}
+ */
+async function _findSourceCandidateFiles(projectRoot, oldKey) {
+    const fromSearch = await _findSourceFilesContainingKey(projectRoot, oldKey);
+    if (fromSearch.length > 0) {
+        return fromSearch;
+    }
+
+    return vscode.workspace.findFiles(
+        new vscode.RelativePattern(projectRoot, SOURCE_INCLUDE_GLOB),
+        new vscode.RelativePattern(projectRoot, SOURCE_EXCLUDE_GLOB),
+    );
+}
+
+/**
+ * @param {string} projectRoot
+ * @param {string} oldKey
+ * @returns {Promise<vscode.Uri[]>}
+ */
+async function _findSourceFilesContainingKey(projectRoot, oldKey) {
+    const uris = new Map();
+    try {
+        await vscode.workspace.findTextInFiles(
+            { pattern: oldKey, isRegExp: false, isCaseSensitive: true },
+            {
+                include: new vscode.RelativePattern(projectRoot, SOURCE_INCLUDE_GLOB),
+                exclude: new vscode.RelativePattern(projectRoot, SOURCE_EXCLUDE_GLOB),
+            },
+            result => {
+                uris.set(result.uri.toString(), result.uri);
+            },
+        );
+    } catch {
+        return [];
+    }
+
+    for (const document of vscode.workspace.textDocuments) {
+        if (_isSourceDocumentInProject(document, projectRoot) && document.getText().includes(oldKey)) {
+            uris.set(document.uri.toString(), document.uri);
+        }
+    }
+
+    return [...uris.values()];
+}
+
+/**
+ * @param {vscode.TextDocument} document
+ * @param {string} projectRoot
+ * @returns {boolean}
+ */
+function _isSourceDocumentInProject(document, projectRoot) {
+    if (!['javascript', 'javascriptreact', 'typescript', 'typescriptreact', 'svelte'].includes(document.languageId)) {
+        return false;
+    }
+
+    return document.uri.fsPath.startsWith(projectRoot) && !_isExcludedSourcePath(document.uri.fsPath);
+}
+
+/**
+ * @param {string} filePath
+ * @returns {boolean}
+ */
+function _isExcludedSourcePath(filePath) {
+    return filePath.includes(`${path.sep}paraglide${path.sep}`)
+        || filePath.includes(`${path.sep}node_modules${path.sep}`)
+        || filePath.includes(`${path.sep}.git${path.sep}`);
+}
+
+/**
+ * @template T,U
+ * @param {T[]} items
+ * @param {number} concurrency
+ * @param {(item: T) => Promise<U>} mapper
+ * @returns {Promise<U[]>}
+ */
+async function mapConcurrent(items, concurrency, mapper) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+    const workerCount = Math.min(concurrency, items.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (nextIndex < items.length) {
+            const index = nextIndex++;
+            results[index] = await mapper(items[index]);
+        }
+    });
+
+    await Promise.all(workers);
+    return results;
+}
+
+module.exports = {
+    applySourceReplacements,
+    buildSourceRenameEdits,
+    buildRenameChanges,
+    validateRenameKey,
+};
