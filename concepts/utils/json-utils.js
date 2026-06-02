@@ -115,6 +115,41 @@ function renameJsonKey(obj, oldKey, newKey) {
 }
 
 /**
+ * Deletes a key from a cloned JSON object.
+ *
+ * @param {Object} obj - The source object.
+ * @param {string} key - The dot-separated key path to delete.
+ * @returns {Object} A new object with the key deleted.
+ */
+function deleteJsonKey(obj, key) {
+    const clone = deepClone(obj);
+    deleteNestedValue(clone, key.split('.'));
+    return clone;
+}
+
+/**
+ * Flattens all leaf keys from a locale JSON object.
+ *
+ * @param {Object} obj
+ * @param {string} prefix
+ * @returns {string[]}
+ */
+function flattenJsonKeys(obj, prefix = '') {
+    const keys = [];
+
+    for (const [key, value] of Object.entries(obj || {})) {
+        const currentKey = prefix ? `${prefix}.${key}` : key;
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            keys.push(...flattenJsonKeys(value, currentKey));
+        } else {
+            keys.push(currentKey);
+        }
+    }
+
+    return keys;
+}
+
+/**
  * Detects the indentation character and count from a raw string.
  * It looks for the first line with leading whitespace (tabs or spaces).
  *
@@ -174,6 +209,8 @@ module.exports = {
     getNestedValue,
     setNestedValue,
     deleteNestedValue,
+    deleteJsonKey,
+    flattenJsonKeys,
     renameJsonKey,
     detectIndent,
     stringifyJsonLike,

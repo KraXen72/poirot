@@ -113,6 +113,16 @@
         "command": "elementaryWatson.renameKey",
         "title": "Rename Translation Key",
         "category": "ElementaryWatson"
+      },
+      {
+        "command": "elementaryWatson.deleteKey",
+        "title": "Delete Translation Key",
+        "category": "ElementaryWatson"
+      },
+      {
+        "command": "elementaryWatson.deleteKeyByName",
+        "title": "Delete Specific Translation Key",
+        "category": "ElementaryWatson"
       }
     ],
     "keybindings": [
@@ -130,6 +140,11 @@
       },
       {
         "command": "elementaryWatson.renameKey",
+        "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
+        "group": "navigation"
+      },
+      {
+        "command": "elementaryWatson.deleteKey",
         "when": "editorTextFocus && elementaryWatson.isCursorOnI18nCall",
         "group": "navigation"
       }
