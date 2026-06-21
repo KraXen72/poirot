@@ -141,11 +141,15 @@ class ExtractionService {
                 cancellable: false,
             },
             async (progress) => {
+                // Capture the document version so we can detect external edits after async work
                 const capturedVersion = document.version;
 
                 progress.report({ message: 'Checking for existing translations...' });
 
                 const inlangSettings = await this.localeService.loadInlangSettingsAsync(workspacePath);
+
+                // First, check if this value already exists in the base locale translations.
+                // If so, reuse the existing key instead of creating a duplicate.
                 const existingKey = await this.findExistingTranslation(workspacePath, value, inlangSettings);
 
                 if (existingKey) {
@@ -190,6 +194,15 @@ class ExtractionService {
         );
     }
 
+    /**
+     * Search base-locale translations for an existing key whose value matches `text`.
+     * Only the base locale is checked (it's the canonical source), saving redundant I/O.
+     * Errors are silently swallowed so callers fall through to creating a new key.
+     * @param {string} workspacePath
+     * @param {string} text
+     * @param {{ baseLocale?: string }} inlangSettings
+     * @returns {Promise<string|null>}
+     */
     async findExistingTranslation(workspacePath, text, inlangSettings) {
         try {
             const baseLocale = inlangSettings?.baseLocale || 'en';
@@ -309,12 +322,17 @@ class ExtractionService {
         const dir = path.dirname(translationPath);
         await fs.mkdir(dir, { recursive: true });
 
+        // Read existing file content, or start from a minimal `{}` if none exists.
+        // `raw` keeps the original text so `stringifyJsonLike` can preserve the
+        // file's existing formatting (indentation, trailing newline) on re-writes.
         let raw = '{}';
         let translations = {};
         try {
             raw = await fs.readFile(translationPath, 'utf8');
             translations = JSON.parse(raw);
         } catch (error) {
+            // ENOENT: file doesn't exist yet — start from an empty object.
+            // All other errors are unexpected (corrupt JSON, permissions, etc.) and should propagate.
             if (error.code !== 'ENOENT') {
                 throw error;
             }
