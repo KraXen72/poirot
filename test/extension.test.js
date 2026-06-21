@@ -176,6 +176,64 @@ suite('renameProvider source edits', () => {
     });
 });
 
+suite('renameProvider locale guard', () => {
+    const { buildRenameChanges } = require('../concepts/providers/renameProvider');
+
+    test('throws when the new key already exists in a locale file', async () => {
+        const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ew-guard-'));
+        try {
+            const messagesDir = path.join(dir, 'messages');
+            const inlangDir = path.join(dir, 'project.inlang');
+            await fs.promises.mkdir(messagesDir, { recursive: true });
+            await fs.promises.mkdir(inlangDir, { recursive: true });
+
+            await fs.promises.writeFile(
+                path.join(inlangDir, 'settings.json'),
+                JSON.stringify({
+                    baseLocale: 'en',
+                    locales: ['en', 'de'],
+                    'plugin.inlang.messageFormat': { pathPattern: './messages/{locale}.json' },
+                }, null, 2) + '\n',
+                'utf8',
+            );
+
+            await fs.promises.writeFile(
+                path.join(messagesDir, 'en.json'),
+                JSON.stringify({ existing_key: 'en value', title: 'already present' }, null, 2) + '\n',
+                'utf8',
+            );
+            await fs.promises.writeFile(
+                path.join(messagesDir, 'de.json'),
+                JSON.stringify({ existing_key: 'de wert' }, null, 2) + '\n',
+                'utf8',
+            );
+
+            const sourcePath = path.join(dir, 'app.js');
+            await fs.promises.writeFile(
+                sourcePath,
+                "import * as m from './paraglide/messages.js';\nconst x = m.existing_key();\n",
+                'utf8',
+            );
+
+            const document = await vscode.workspace.openTextDocument(vscode.Uri.file(sourcePath));
+            await vscode.window.showTextDocument(document);
+
+            const { LocaleService } = require('../concepts/locale/service');
+            const { TranslationService } = require('../concepts/translation/service');
+
+            await assert.rejects(
+                () => buildRenameChanges(
+                    document, 'existing_key', 'title',
+                    new TranslationService(), new LocaleService(),
+                ),
+                /already exists/,
+            );
+        } finally {
+            await fs.promises.rm(dir, { recursive: true, force: true });
+        }
+    });
+});
+
 suite('human-key generator', () => {
     const { generateHumanKey } = require('../concepts/utils/human-key');
     const wordlists = require('../concepts/utils/human-key-wordlists.json');
@@ -218,7 +276,7 @@ suite('human-key generator', () => {
 });
 
 suite('text-edits transaction helper', () => {
-    const { applyTextFileChanges } = require('../concepts/utils/text-edits');
+    const { applyTextFileChanges, TextFileChangeTransactionError } = require('../concepts/utils/text-edits');
 
     test('writes directly to disk without applyEdit when file is not open in editor', async () => {
         const uri = await makeTempFile('old');
@@ -321,6 +379,41 @@ suite('text-edits transaction helper', () => {
             assert.strictEqual(writeCalls, 0);
         } finally {
             vscode.workspace.fs.writeFile = originalWriteFile;
+        }
+    });
+
+    test('reports phase "rollback" when a rollback action itself fails', async () => {
+        const uri = await makeTempFile('initial', '.json');
+        const failUri = await makeTempFile('other');
+
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const dirty = new vscode.WorkspaceEdit();
+        dirty.replace(uri, fullRange(doc), 'step0');
+        assert.strictEqual(await vscode.workspace.applyEdit(dirty), true);
+
+        try {
+            await applyTextFileChanges([
+                { uri, oldText: 'step0', newText: 'step1', reason: 'step one' },
+                { uri, oldText: 'step1', newText: 'step2', reason: 'step two' },
+                { uri, oldText: 'step2', newText: 'step3', reason: 'step three' },
+                { uri: failUri, oldText: 'wrong', newText: 'never', reason: 'trigger failure' },
+            ]);
+            assert.fail('should have thrown');
+        } catch (err) {
+            assert.ok(err instanceof TextFileChangeTransactionError,
+                'error should be a TextFileChangeTransactionError');
+            assert.strictEqual(err.phase, 'rollback',
+                'phase should be "rollback"');
+            assert.strictEqual(err.rollbackSucceeded, false,
+                'rollbackSucceeded should be false');
+            assert.ok(err.message.includes('(2 changes still applied'),
+                'message should list 2 still-applied changes');
+            assert.ok(err.message.includes('step one'),
+                'message should name still-applied "step one"');
+            assert.ok(err.message.includes('step two'),
+                'message should name still-applied "step two"');
+        } finally {
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
         }
     });
 });
