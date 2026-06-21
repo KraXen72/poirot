@@ -1,8 +1,9 @@
+/** @import { TranslationService } from '../translation/service'; */
+/** @import { LocaleService } from '../locale/service'; */
+
 const vscode = require('vscode');
 const fs = require('fs/promises');
 const path = require('path');
-const { LocaleService } = require('../locale/service');
-const { TranslationService } = require('../translation/service');
 const { deepClone, setNestedValue, stringifyJsonLike } = require('../utils/json-utils');
 const { formatKeyCall } = require('../utils/key-format');
 const { generateHumanKey } = require('../utils/human-key');
@@ -13,7 +14,11 @@ const { stageOrWriteDocumentRange } = require('../utils/text-edits');
  * writes the value to all locale files, and generates a unique human-readable key when needed.
  */
 class ExtractionService {
-    constructor(localeService = new LocaleService(), translationService = new TranslationService()) {
+    /**
+     * @param {LocaleService} localeService
+     * @param {TranslationService} translationService
+     */
+    constructor(localeService, translationService) {
         this.localeService = localeService;
         this.translationService = translationService;
     }
