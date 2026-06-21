@@ -328,7 +328,7 @@ function _isExcludedSourcePath(filePath) {
  * @returns {Promise<U[]>}
  */
 async function mapConcurrent(items, concurrency, mapper) {
-    const results = new Array(items.length);
+    const results = Array.from({ length: items.length });
     let nextIndex = 0;
     const workerCount = Math.min(concurrency, items.length);
     const workers = Array.from({ length: workerCount }, async () => {
