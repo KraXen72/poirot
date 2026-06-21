@@ -25,14 +25,14 @@ function fullRange(document) {
     return new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
 }
 
-suite('ExtensionActivator rename refresh suppression', () => {
-    /** @returns {import('../concepts/extension/activator').ExtensionActivator} */
-    function makeActivator() {
-        const { ExtensionActivator } = require('../concepts/extension/activator');
-        return new ExtensionActivator();
-    }
+/** @returns {import('../concepts/extension/activator').ExtensionActivator} */
+function makeActivator() {
+    const { ExtensionActivator } = require('../concepts/extension/activator');
+    return new ExtensionActivator();
+}
 
-    test('suppresses known rename URIs', () => {
+suite('ExtensionActivator rename refresh suppression', () => {
+    test('returns true for all URIs when rename suppression is active', () => {
         const a = makeActivator();
         a.beginRenameRefreshSuppression(['file:///a.json', 'file:///b.ts']);
 
@@ -41,7 +41,7 @@ suite('ExtensionActivator rename refresh suppression', () => {
         assert.strictEqual(a.shouldSuppressRenameRefresh('file:///c.ts'), true, 'all refreshes are suppressed during apply');
     });
 
-    test('late rename URI events are skipped once after apply', () => {
+    test('skips each URI only once after rename suppression ends', () => {
         const a = makeActivator();
         a.beginRenameRefreshSuppression(['file:///a.json']);
         a._isApplyingRename = false;
@@ -50,7 +50,7 @@ suite('ExtensionActivator rename refresh suppression', () => {
         assert.strictEqual(a.shouldSuppressRenameRefresh('file:///a.json'), false);
     });
 
-    test('beginRenameRefreshSuppression clears pending debounced refreshes for changed URIs', () => {
+    test('clears pending debounced timeouts for changed URIs when suppression begins', () => {
         const a = makeActivator();
         const timeout = setTimeout(() => {}, 1000);
         a.documentUpdateTimeouts.set('file:///a.ts', timeout);
@@ -59,16 +59,15 @@ suite('ExtensionActivator rename refresh suppression', () => {
 
         assert.strictEqual(a.documentUpdateTimeouts.has('file:///a.ts'), false);
     });
+
+    test('returns false when URI is not suppressed and rename is not in progress', () => {
+        const a = makeActivator();
+        assert.strictEqual(a.shouldSuppressRenameRefresh('file:///any.ts'), false);
+    });
 });
 
 suite('ExtensionActivator activation', () => {
-    /** @returns {import('../concepts/extension/activator').ExtensionActivator} */
-    function makeActivator() {
-        const { ExtensionActivator } = require('../concepts/extension/activator');
-        return new ExtensionActivator();
-    }
-
-    test('registers contributed command handlers during activation', () => {
+    test('registers all contributed command handlers when activating', () => {
         const a = makeActivator();
         const calls = [];
 
@@ -98,32 +97,41 @@ suite('ExtensionActivator activation', () => {
 
 suite('validateRenameKey', () => {
     const { validateRenameKey } = require('../concepts/providers/renameProvider');
+    const VALIDATION_ERROR = 'Not a valid translation key. Use letters, numbers, underscores, and dots only.';
 
-    test('accepts valid flat keys', () => {
+    test('returns null for valid flat keys', () => {
         assert.strictEqual(validateRenameKey('hello_world'), null);
         assert.strictEqual(validateRenameKey('my_key_123'), null);
         assert.strictEqual(validateRenameKey('$valid'), null);
     });
 
-    test('accepts valid nested keys', () => {
+    test('returns null for valid nested keys', () => {
         assert.strictEqual(validateRenameKey('login.inputs.email'), null);
         assert.strictEqual(validateRenameKey('a.b.c'), null);
     });
 
-    test('rejects keys with spaces', () => {
-        assert.ok(typeof validateRenameKey('hello world') === 'string');
+    test('returns null for keys starting with underscore', () => {
+        assert.strictEqual(validateRenameKey('_valid'), null);
     });
 
-    test('rejects keys starting with a digit', () => {
-        assert.ok(typeof validateRenameKey('1invalid') === 'string');
+    test('returns error message when key contains spaces', () => {
+        assert.strictEqual(validateRenameKey('hello world'), VALIDATION_ERROR);
     });
 
-    test('rejects keys with hyphens', () => {
-        assert.ok(typeof validateRenameKey('bad-key') === 'string');
+    test('returns error message when key starts with a digit', () => {
+        assert.strictEqual(validateRenameKey('1invalid'), VALIDATION_ERROR);
     });
 
-    test('rejects empty string', () => {
-        assert.ok(typeof validateRenameKey('') === 'string');
+    test('returns error message when key contains hyphens', () => {
+        assert.strictEqual(validateRenameKey('bad-key'), VALIDATION_ERROR);
+    });
+
+    test('returns error message when key is empty', () => {
+        assert.strictEqual(validateRenameKey(''), VALIDATION_ERROR);
+    });
+
+    test('returns error message when key starts with a dot', () => {
+        assert.strictEqual(validateRenameKey('.key'), VALIDATION_ERROR);
     });
 });
 
@@ -133,7 +141,7 @@ suite('renameProvider source edits', () => {
         buildSourceRenameEdits,
     } = require('../concepts/providers/renameProvider');
 
-    test('renames flat calls with range edits', () => {
+    test('converts flat calls to range edits when renaming to a flat key', () => {
         const text = 'const a = m.title();';
         const edits = buildSourceRenameEdits(text, [
             { methodName: 'title', start: 10, end: 19, keyType: 'flat' },
@@ -143,7 +151,7 @@ suite('renameProvider source edits', () => {
         assert.strictEqual(applySourceReplacements(text, edits), 'const a = m.heading();');
     });
 
-    test('renames flat calls to nested bracket calls', () => {
+    test('converts flat calls to bracket notation when renaming to a nested key', () => {
         const text = 'const a = m.title();';
         const edits = buildSourceRenameEdits(text, [
             { methodName: 'title', start: 10, end: 19, keyType: 'flat' },
@@ -153,7 +161,7 @@ suite('renameProvider source edits', () => {
         assert.strictEqual(applySourceReplacements(text, edits), 'const a = m["page.title"]();');
     });
 
-    test('renames quoted nested calls without changing quote style', () => {
+    test('preserves quote style when renaming nested bracket calls', () => {
         const text = "const a = m['page.title']();";
         const edits = buildSourceRenameEdits(text, [
             { methodName: 'page.title', start: 10, end: 27, keyType: 'nested' },
@@ -161,6 +169,10 @@ suite('renameProvider source edits', () => {
 
         assert.deepStrictEqual(edits, [{ start: 13, end: 23, replacement: 'page.heading' }]);
         assert.strictEqual(applySourceReplacements(text, edits), "const a = m['page.heading']();");
+    });
+
+    test('returns original text when no replacements are provided', () => {
+        assert.strictEqual(applySourceReplacements('hello world', []), 'hello world');
     });
 });
 
@@ -172,13 +184,13 @@ suite('human-key generator', () => {
     const nouns = new Set(wordlists.nouns);
     const verbs = new Set(wordlists.verbs);
 
-    test('generates four lowercase underscore-separated words', () => {
+    test('generates four underscore-separated words when producing a key', () => {
         for (let i = 0; i < 25; i++) {
             assert.match(generateHumanKey(), /^[a-z]+_[a-z]+_[a-z]+_[a-z]+$/);
         }
     });
 
-    test('uses words from the bundled wordlists', () => {
+    test('picks words exclusively from bundled wordlists when generating a key', () => {
         for (let i = 0; i < 25; i++) {
             const [first, second, noun, verb] = generateHumanKey().split('_');
 
@@ -189,7 +201,7 @@ suite('human-key generator', () => {
         }
     });
 
-    test('does not repeat the adjective slots in one key', () => {
+    test('uses distinct words for both adjective slots when generating a key', () => {
         for (let i = 0; i < 25; i++) {
             const [first, second] = generateHumanKey().split('_');
 
@@ -197,7 +209,7 @@ suite('human-key generator', () => {
         }
     });
 
-    test('has enough source words for a low-collision id space', () => {
+    test('provides sufficient wordlists for a low-collision key space', () => {
         assert.ok(wordlists.adjectives.length > 500);
         assert.ok(wordlists.colors.length > 10);
         assert.ok(wordlists.nouns.length > 1000);
@@ -208,7 +220,7 @@ suite('human-key generator', () => {
 suite('text-edits transaction helper', () => {
     const { applyTextFileChanges } = require('../concepts/utils/text-edits');
 
-    test('direct-write-only success does not call workspace.applyEdit', async () => {
+    test('writes directly to disk without applyEdit when file is not open in editor', async () => {
         const uri = await makeTempFile('old');
         let applyEditCalls = 0;
 
@@ -223,7 +235,7 @@ suite('text-edits transaction helper', () => {
         assert.strictEqual(await fs.promises.readFile(uri.fsPath, 'utf8'), 'new');
     });
 
-    test('dirty files use one WorkspaceEdit per changed file', async () => {
+    test('uses one WorkspaceEdit when the target file is dirty', async () => {
         const uri = await makeTempFile('old');
         const document = await vscode.workspace.openTextDocument(uri);
         const makeDirty = new vscode.WorkspaceEdit();
@@ -249,7 +261,7 @@ suite('text-edits transaction helper', () => {
         assert.strictEqual(await document.save(), true);
     });
 
-    test('open files can use range edits without writing to disk', async () => {
+    test('applies range edits in memory when the file is open', async () => {
         const uri = await makeTempFile('const a = m.title();', '.js');
         const document = await vscode.workspace.openTextDocument(uri);
 
@@ -278,7 +290,7 @@ suite('text-edits transaction helper', () => {
         assert.strictEqual(await document.save(), true);
     });
 
-    test('forward direct-write failure rolls back previous writes', async () => {
+    test('rolls back earlier writes when a later change fails', async () => {
         const first = await makeTempFile('first old');
         const second = await makeTempFile('actual current');
 
@@ -294,7 +306,7 @@ suite('text-edits transaction helper', () => {
         assert.strictEqual(await fs.promises.readFile(second.fsPath, 'utf8'), 'actual current');
     });
 
-    test('unchanged replacements are skipped', async () => {
+    test('skips changes when oldText equals newText', async () => {
         const uri = await makeTempFile('same');
         let writeCalls = 0;
         const originalWriteFile = vscode.workspace.fs.writeFile;
@@ -322,7 +334,7 @@ suite('deleteProvider helpers', () => {
         getLocalePathsByLocale,
     } = require('../concepts/providers/deleteProvider');
 
-    test('replaces flat and bracket notation calls with a string literal', () => {
+    test('inlines both flat and bracket calls when deleting a key', () => {
         const text = 'const a = m.title(); const b = m["nested.key"]({ count });';
         const calls = [
             { methodName: 'title', start: 10, end: 19, keyType: 'flat' },
@@ -335,7 +347,7 @@ suite('deleteProvider helpers', () => {
         );
     });
 
-    test('uses balanced call ranges when arguments contain nested parentheses', () => {
+    test('finds the correct end offset when arguments contain nested parentheses', () => {
         const text = 'const greeting = m.greeting({ name: format(user) });';
         const call = { methodName: 'greeting', start: 17, end: 48, keyType: 'flat' };
 
@@ -346,7 +358,7 @@ suite('deleteProvider helpers', () => {
         );
     });
 
-    test('builds a search regex for supported flat and bracket usage forms', () => {
+    test('matches all supported call forms when building a flat-key search regex', () => {
         const regex = buildUsageSearchRegex('my_key');
         assert.match('{m.my_key()}', new RegExp(regex, 'u'));
         assert.match('m.my_key({ count })', new RegExp(regex, 'u'));
@@ -356,7 +368,7 @@ suite('deleteProvider helpers', () => {
         assert.doesNotMatch('{m.my_key_extra()}', new RegExp(regex, 'u'));
     });
 
-    test('builds a bracket-only search regex for nested keys', () => {
+    test('excludes dot-notation calls when building a nested-key search regex', () => {
         const regex = buildUsageSearchRegex('nested.key');
         assert.match('m["nested.key"]()', new RegExp(regex, 'u'));
         assert.match("m['nested.key']()", new RegExp(regex, 'u'));
@@ -364,7 +376,7 @@ suite('deleteProvider helpers', () => {
         assert.doesNotMatch('m.nested.key()', new RegExp(regex, 'u'));
     });
 
-    test('preserves locale names for directory-based locale path patterns', async () => {
+    test('returns locale-tagged paths when locale files use directory patterns', async () => {
         const localeService = {
             getAvailableLocales: async () => ['en', 'es'],
             resolveTranslationPathAsync: async (root, locale) => `${root}/messages/${locale}/messages.json`,
@@ -379,7 +391,7 @@ suite('deleteProvider helpers', () => {
         );
     });
 
-    test('delete planning returns changes without writing', () => {
+    test('returns computed changes without writing when planning a delete', () => {
         const uri = vscode.Uri.file('/workspace/messages/en.json');
         const changes = buildDeleteChanges({
             key: 'title',
@@ -397,12 +409,20 @@ suite('deleteProvider helpers', () => {
             ],
         );
     });
+
+    test('returns original text when calls array is empty', () => {
+        assert.strictEqual(applyCallReplacements('const a = m.title();', [], '"Title"'), 'const a = m.title();');
+    });
+
+    test('returns null when parentheses are unbalanced', () => {
+        assert.strictEqual(findBalancedCallEnd('const a = m.title(', { start: 10, end: 19, methodName: 'title' }), null);
+    });
 });
 
 suite('json-utils delete helpers', () => {
     const { deleteJsonKey, flattenJsonKeys } = require('../concepts/utils/json-utils');
 
-    test('removes a nested key without affecting siblings', () => {
+    test('removes only the target key when paths share a common parent', () => {
         const input = { title: 'Title', nested: { keep: 'Keep', remove: 'Remove' } };
         assert.deepStrictEqual(
             deleteJsonKey(input, 'nested.remove'),
@@ -411,10 +431,24 @@ suite('json-utils delete helpers', () => {
         assert.deepStrictEqual(input, { title: 'Title', nested: { keep: 'Keep', remove: 'Remove' } });
     });
 
-    test('flattens leaf keys from nested locale JSON', () => {
+    test('returns a clone without the key when the key does not exist', () => {
+        const input = { a: 1 };
+        assert.deepStrictEqual(deleteJsonKey(input, 'b'), { a: 1 });
+    });
+
+    test('returns all leaf paths when flattening a nested object', () => {
         assert.deepStrictEqual(
             flattenJsonKeys({ title: 'Title', nested: { body: 'Body' }, variants: [] }).sort(),
             ['nested.body', 'title', 'variants'],
         );
+    });
+
+    test('returns an empty array when the object is empty', () => {
+        assert.deepStrictEqual(flattenJsonKeys({}), []);
+    });
+
+    test('returns an empty array when the input is null or undefined', () => {
+        assert.deepStrictEqual(flattenJsonKeys(null), []);
+        assert.deepStrictEqual(flattenJsonKeys(undefined), []);
     });
 });
