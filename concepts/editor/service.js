@@ -1,11 +1,19 @@
+/** @import { TranslationService } from '../translation/service'; */
+/** @import { LocaleService } from '../locale/service'; */
+
 const vscode = require('vscode');
 const { EditorDecorator } = require('./decorator');
 const { TranslationCodeLensProvider } = require('./codelens');
 
 /**
- * Service for processing VS Code documents and managing translation displays
+ * Processes the active document to find `m.key()` calls, resolves their translations for the current
+ * locale, then applies inline decorations and CodeLens so the user can see values and navigate.
  */
 class EditorService {
+    /**
+     * @param {TranslationService} translationService
+     * @param {LocaleService} localeService
+     */
     constructor(translationService, localeService) {
         this.translationService = translationService;
         this.localeService = localeService;
