@@ -577,6 +577,9 @@ class ExtensionActivator {
         // Listen for document saves
         const saveDisposable = vscode.workspace.onDidSaveTextDocument(async (document) => {
             if (this.editorService.isSupportedDocument(document)) {
+                // Cancel any in-flight debounced sidebar clear before processing the save
+                this.sidebarTreeProvider.cancelPendingClear();
+
                 console.log(`\n💾 File saved: ${path.basename(document.uri.fsPath)}`);
                 await this.editorService.processDocument(document);
                 
@@ -591,10 +594,13 @@ class ExtensionActivator {
                 if (this.editorService.isSupportedDocument(editor.document)) {
                     await this.editorService.processDocument(editor.document);
 
-                    // Refresh sidebar for the new active document (don't force if it's a translation file)
+                    await this.sidebarTreeProvider.refresh(editor.document);
+                } else if (await this.sidebarService.isTranslationFile(editor.document)) {
+                    // Preserve sidebar context when viewing translation files
                     await this.sidebarTreeProvider.refresh(editor.document);
                 } else {
-                    await this.sidebarTreeProvider.refresh(editor.document);
+                    // Clear sidebar for documents that are neither supported nor translation files
+                    await this.sidebarTreeProvider.refresh(null);
                 }
             } else {
                 // Clear sidebar if no supported document is active and it's not a translation file
@@ -779,7 +785,7 @@ class ExtensionActivator {
      * @returns {string} A glob pattern suitable for `new RelativePattern(folder, …)`.
      */
     _buildSafeGlobPattern(pathPattern) {
-        let glob = pathPattern.replace('{locale}', '*').replace(/^\.\//, '');
+        let glob = pathPattern.replace('{locale}', '*').replace(/^(\.\/|\/)/, '');
         if (!glob.includes('/')) {
             console.warn(
                 `Translation path pattern "${pathPattern}" resolves to root-level glob "${glob}". ` +

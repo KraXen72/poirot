@@ -4,9 +4,9 @@ const vscode = require('vscode');
 const path = require('path');
 const { getLocaleFilePaths, getProjectRoot } = require('../utils/i18n-detection');
 const { getNestedValue, stringifyJsonLike, renameJsonKey } = require('../utils/json-utils');
-const { getOpenTextDocument, readTextDocumentOrFile } = require('../utils/text-edits');
+const { applyReverseEdits, getOpenTextDocument, readTextDocumentOrFile } = require('../utils/text-edits');
 
-const KEY_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_.]*$/;
+const KEY_PATTERN = /^[a-zA-Z_$][a-zA-Z0-9_]*(\.[a-zA-Z_$][a-zA-Z0-9_]*)*$/;
 const SOURCE_INCLUDE_GLOB = '**/*.{js,jsx,ts,tsx,svelte}';
 const SOURCE_EXCLUDE_GLOB = '{node_modules,.git,paraglide}/**';
 const PLANNING_CONCURRENCY = 24;
@@ -163,12 +163,7 @@ async function _renameInSourceFiles(projectRoot, oldKey, newKey, translationServ
  * @returns {string} The modified text content.
  */
 function applySourceReplacements(text, replacements) {
-    const sorted = replacements.slice().sort((a, b) => b.start - a.start);
-    let result = text;
-    for (const edit of sorted) {
-        result = result.slice(0, edit.start) + edit.replacement + result.slice(edit.end);
-    }
-    return result;
+    return applyReverseEdits(text, replacements);
 }
 
 /**
@@ -215,6 +210,18 @@ function _buildCharReplacement(text, call, newKey) {
     if (!nestedMatch) {
         return { start: call.start, end: call.end, replacement: newKey };
     }
+
+    // Replace the entire bracket access with dot notation when the new key has no dots
+    if (!newKey.includes('.')) {
+        const bracketStart = matchText.indexOf('[');
+        const bracketEnd   = matchText.indexOf(']');
+        return {
+            start: call.start + bracketStart,
+            end:   call.start + bracketEnd + 1,
+            replacement: `.${newKey}`,
+        };
+    }
+
     const keyOffset = matchText.indexOf(nestedMatch[2]);
     return {
         start: call.start + keyOffset,

@@ -2,7 +2,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const { deleteJsonKey, flattenJsonKeys, getNestedValue, stringifyJsonLike } = require('../utils/json-utils');
-const { readTextDocumentOrFile } = require('../utils/text-edits');
+const { applyReverseEdits, readTextDocumentOrFile } = require('../utils/text-edits');
 
 const SOURCE_GLOB = '**/*.{js,jsx,ts,tsx,svelte}';
 const SOURCE_EXCLUDE_GLOB = '{node_modules,.git,paraglide}/**';
@@ -274,10 +274,8 @@ function deleteFromLocaleFiles(plan) {
  * @returns {string}
  */
 function applyCallReplacements(text, calls, replacement) {
-    return calls
-        .slice()
-        .sort((a, b) => b.start - a.start)
-        .reduce((result, call) => result.slice(0, call.start) + replacement + result.slice(call.end), text);
+    const edits = calls.map(call => ({ start: call.start, end: call.end, replacement }));
+    return applyReverseEdits(text, edits);
 }
 
 /**

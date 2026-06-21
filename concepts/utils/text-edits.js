@@ -59,6 +59,7 @@ async function readTextDocumentOrFile(uri) {
  */
 async function applyTextFileChanges(changes) {
     const rollbackActions = [];
+    const rollbackChangeMeta = [];
     let skipped = 0;
 
     for (const change of changes) {
@@ -70,8 +71,9 @@ async function applyTextFileChanges(changes) {
         try {
             const rollback = await applyOneTextFileChange(change);
             rollbackActions.push(rollback);
+            rollbackChangeMeta.push(change);
         } catch (error) {
-            await rollbackAppliedChanges(rollbackActions, error);
+            await rollbackAppliedChanges(rollbackActions, rollbackChangeMeta, error);
         }
     }
 
@@ -202,17 +204,23 @@ async function applyDirectWriteChange(change) {
 
 /**
  * @param {Array<() => Promise<void>>} rollbackActions
+ * @param {Array<{ uri: vscode.Uri, reason?: string }>} rollbackChangeMeta
  * @param {unknown} forwardError
  * @returns {Promise<never>}
  */
-async function rollbackAppliedChanges(rollbackActions, forwardError) {
+async function rollbackAppliedChanges(rollbackActions, rollbackChangeMeta, forwardError) {
     try {
         for (const rollback of rollbackActions.slice().reverse()) {
             await rollback();
+            rollbackChangeMeta.pop();
         }
     } catch (rollbackError) {
+        const stillApplied = rollbackChangeMeta.length;
+        const suffix = stillApplied > 1
+            ? ` (${stillApplied} changes still applied: ${rollbackChangeMeta.map(describeChange).join('; ')})`
+            : '';
         throw new TextFileChangeTransactionError(
-            `Forward change failed and rollback could not be completed. ${getErrorMessage(rollbackError)}`,
+            `Forward change failed and rollback could not be completed. ${getErrorMessage(rollbackError)}${suffix}`,
             { phase: 'rollback', rollbackSucceeded: false, cause: rollbackError },
         );
     }
@@ -269,6 +277,22 @@ function getErrorMessage(error) {
 }
 
 /**
+ * Apply a list of edits by sorting them in descending start-offset order and splicing
+ * each one into the text with `slice`. Replaces in reverse so earlier offsets remain
+ * valid as later (higher-offset) edits are applied first.
+ *
+ * @param {string} text - The original string.
+ * @param {Array<{ start: number, end: number, replacement: string }>} edits
+ * @returns {string}
+ */
+function applyReverseEdits(text, edits) {
+    return edits
+        .slice()
+        .sort((a, b) => b.start - a.start)
+        .reduce((result, edit) => result.slice(0, edit.start) + edit.replacement + result.slice(edit.end), text);
+}
+
+/**
  * Writes content directly unless the file is open with unsaved changes, in which case it
  * uses a WorkspaceEdit so the in-memory buffer remains the source of truth.
  *
@@ -314,6 +338,7 @@ async function stageOrWriteDocumentRange(edit, document, range, replacement) {
 }
 
 module.exports = {
+    applyReverseEdits,
     applyTextFileChanges,
     getOpenTextDocument,
     hasWorkspaceEdits,

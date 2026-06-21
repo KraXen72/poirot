@@ -54,16 +54,22 @@ class SidebarTreeProvider {
     }
 
     /**
+     * Cancel any pending debounced clear operation.
+     */
+    cancelPendingClear() {
+        if (this.clearTimeout) {
+            clearTimeout(this.clearTimeout);
+            this.clearTimeout = null;
+        }
+    }
+
+    /**
      * Refresh the tree view
      * @param {vscode.TextDocument} document The current document
      * @param {boolean} force Force refresh even if it's a translation file
      */
     async refresh(document, force = false) {
-        // Cancel any pending clear operation
-        if (this.clearTimeout) {
-            clearTimeout(this.clearTimeout);
-            this.clearTimeout = null;
-        }
+        this.cancelPendingClear();
         
         if (document) {
             const isTransFile = await this.sidebarService.isTranslationFile(document);

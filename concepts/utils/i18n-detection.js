@@ -87,33 +87,23 @@ function getCallKeyRange(line, call) {
  */
 function getProjectRoot(document) {
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-    if (!workspaceFolder) {
-        return null;
-    }
 
     let currentDir = path.dirname(document.uri.fsPath);
-    const workspaceRoot = workspaceFolder.uri.fsPath;
+    const minDir = workspaceFolder ? workspaceFolder.uri.fsPath : path.parse(currentDir).root;
 
-    while (currentDir.length >= workspaceRoot.length) {
-        const projectInlangPath = path.join(currentDir, 'project.inlang', 'settings.json');
-        if (fs.existsSync(projectInlangPath)) {
+    while (currentDir.length >= minDir.length) {
+        if (fs.existsSync(path.join(currentDir, 'project.inlang', 'settings.json'))) {
             return currentDir;
         }
-
-        const legacyInlangPath = path.join(currentDir, 'inlang.project', 'settings.json');
-        if (fs.existsSync(legacyInlangPath)) {
+        if (fs.existsSync(path.join(currentDir, 'inlang.project', 'settings.json'))) {
             return currentDir;
         }
-
         const parentDir = path.dirname(currentDir);
-        if (parentDir === currentDir) {
-            break;
-        }
-
+        if (parentDir === currentDir) break;
         currentDir = parentDir;
     }
 
-    return workspaceRoot;
+    return workspaceFolder ? workspaceFolder.uri.fsPath : null;
 }
 
 /**

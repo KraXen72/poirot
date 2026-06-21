@@ -147,10 +147,12 @@ class ExtractionService {
                 progress.report({ message: 'Checking for existing translations...' });
 
                 const inlangSettings = await this.localeService.loadInlangSettingsAsync(workspacePath);
+                const baseLocale = inlangSettings?.baseLocale || 'en';
+                const baseTranslations = await this.loadBaseTranslations(workspacePath, baseLocale);
 
                 // First, check if this value already exists in the base locale translations.
                 // If so, reuse the existing key instead of creating a duplicate.
-                const existingKey = await this.findExistingTranslation(workspacePath, value, inlangSettings);
+                const existingKey = await this.findExistingTranslation(value, baseTranslations);
 
                 if (existingKey) {
                     const interpolationType = forcedInterpolationType || await this.getUserInterpolationChoice(languageId, existingKey);
@@ -158,13 +160,17 @@ class ExtractionService {
                         return false;
                     }
 
+                    if (document.version !== capturedVersion) {
+                        vscode.window.showWarningMessage(
+                            'ElementaryWatson: Document was edited during extraction. Please try again.'
+                        );
+                        return false;
+                    }
+
                     return await this.replaceSelectedText(document, selection, formatKeyCall(existingKey, interpolationType));
                 }
 
                 progress.report({ message: 'Generating key...' });
-                const baseLocale = inlangSettings?.baseLocale || 'en';
-                const baseTranslationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, baseLocale);
-                const baseTranslations = await this.loadTranslations(baseTranslationPath);
                 const newKey = await this.generateUniqueKey(baseTranslations || {});
                 if (!newKey) {
                     vscode.window.showErrorMessage('Failed to generate unique key');
@@ -195,24 +201,34 @@ class ExtractionService {
     }
 
     /**
+     * Load the base-locale translation file and return its parsed content.
+     * @param {string} workspacePath
+     * @param {string} baseLocale
+     * @returns {Promise<object|null>}
+     */
+    async loadBaseTranslations(workspacePath, baseLocale) {
+        try {
+            const baseTranslationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, baseLocale);
+            return await this.loadTranslations(baseTranslationPath);
+        } catch (error) {
+            console.error('Error loading base translations:', error);
+            return null;
+        }
+    }
+
+    /**
      * Search base-locale translations for an existing key whose value matches `text`.
      * Only the base locale is checked (it's the canonical source), saving redundant I/O.
      * Errors are silently swallowed so callers fall through to creating a new key.
-     * @param {string} workspacePath
      * @param {string} text
-     * @param {{ baseLocale?: string }} inlangSettings
+     * @param {object|null} baseTranslations
      * @returns {Promise<string|null>}
      */
-    async findExistingTranslation(workspacePath, text, inlangSettings) {
+    async findExistingTranslation(text, baseTranslations) {
         try {
-            const baseLocale = inlangSettings?.baseLocale || 'en';
-            // Check in base locale first
-            const baseTranslationPath = await this.localeService.resolveTranslationPathAsync(workspacePath, baseLocale);
-            const baseTranslations = await this.loadTranslations(baseTranslationPath);
             if (baseTranslations) {
                 return this.searchInTranslations(baseTranslations, text);
             }
-
             return null;
         } catch (error) {
             console.error('Error finding existing translation:', error);

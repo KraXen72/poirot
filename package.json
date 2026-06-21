@@ -150,12 +150,13 @@
       }
     ]
   },
-  "scripts": {
-    "lint": "eslint .",
-    "package": "vsce package",
-    "pretest": "pnpm lint",
-    "test": "vscode-test"
-  },
+	"scripts": {
+		"lint": "eslint .",
+		"package": "vsce package",
+		"pretest": "pnpm lint",
+		"test": "vscode-test",
+		"test:coverage": "vscode-test --coverage"
+	},
   "vsce": {
     "dependencies": false
   },

@@ -113,9 +113,10 @@ class LocaleService {
 
         try {
             const entries = await fsPromises.readdir(sampleDir, { withFileTypes: true });
-            return entries
+            const locales = entries
                 .filter(entry => entry.isFile() && entry.name.endsWith('.json'))
                 .map(entry => path.basename(entry.name, '.json'));
+            return locales.length > 0 ? locales : ['en'];
         } catch (error) {
             if (error.code !== 'ENOENT') {
                 console.log(`❌ Failed to read locale directory: ${error.message}`);
