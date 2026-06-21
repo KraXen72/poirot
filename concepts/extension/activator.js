@@ -17,6 +17,13 @@ const {
 const { getKeyAtPosition, getKeyRangeAtPosition, getProjectRoot } = require('../utils/i18n-detection');
 const { applyTextFileChanges } = require('../utils/text-edits');
 
+/** @import { Disposable, FileSystemWatcher } from 'vscode' */
+
+/**
+ * Wires together all services and registers every VS Code command, event listener, and file watcher
+ * the extension needs. Also manages the rename-refresh-suppression mechanism that prevents the
+ * onDidChangeTextDocument handler from interfering while the rename command applies bulk edits.
+ */
 class ExtensionActivator {
     constructor() {
         this.localeService = new LocaleService();
@@ -25,14 +32,26 @@ class ExtensionActivator {
         this.sidebarService = new SidebarService(this.translationService, this.localeService);
         this.sidebarTreeProvider = new SidebarTreeProvider(this.sidebarService, this.localeService, this.translationService);
         this.extractionService = new ExtractionService(this.localeService, this.translationService);
+
+        /** @type {Disposable[]} */
         this.disposables = [];
         // Debounce utilities for content change updates
         this.documentUpdateTimeouts = new Map(); // Map of document URI to timeout
         // File watchers for translation files
+        /** @type {FileSystemWatcher[]} */
         this.translationFileWatchers = [];
+
+        // During a rename, the document-change handler would re-decorate mid-edit and potentially
+        // throw or show stale labels. These fields suppress that processing until the rename finishes.
         this._isApplyingRename = false;
         this._renameSuppressedUris = new Set();
         this._renameSuppressionTimeout = null;
+
+        // Guards against concurrent invocations of the async setupTranslationFileWatchers.
+        // Chained calls wait for an in-progress run to complete before starting their own,
+        // preventing leaked watchers when workspace folders change rapidly.
+        /** @type {Promise<void> | null} */
+        this._setupWatchersPromise = null;
     }
 
     /**
@@ -106,6 +125,11 @@ class ExtensionActivator {
         return false;
     }
 
+    /**
+     * During a rename operation, suppress document-change processing for the given URIs and
+     * cancel any pending debounced updates for them. This prevents the event handler from
+     * re-decorating (and possibly throwing) while bulk text edits are in flight.
+     */
     beginRenameRefreshSuppression(uris) {
         this._isApplyingRename = true;
         this._renameSuppressedUris = new Set(uris);
@@ -124,6 +148,11 @@ class ExtensionActivator {
         }
     }
 
+    /**
+     * End the suppression window. Each URI in the suppressed set is silently skipped once so that
+     * document-change events that fired during the rename don't trigger a stale refresh. The set is
+     * cleared after a short timeout as a safety catch.
+     */
     endRenameRefreshSuppression() {
         this._isApplyingRename = false;
         this._renameSuppressionTimeout = setTimeout(() => {
@@ -132,6 +161,12 @@ class ExtensionActivator {
         }, this.getDebounceDelay() + 100);
     }
 
+    /**
+     * During an active rename every URI is suppressed; 
+     * after the rename, each URI is allowed through exactly once (the first
+     * event that arrives after suppression ends) so that one post-rename refresh isn't lost.
+     * @returns true if processing for this URI should be skipped.
+     */
     shouldSuppressRenameRefresh(uri) {
         if (this._isApplyingRename) {
             return true;
@@ -259,6 +294,10 @@ class ExtensionActivator {
         this.disposables.push(changeLocaleCommand);
     }
 
+    /**
+     * Register the "inspect translation" command, triggered via the CodeLens or command palette.
+     * Switches focus to the sidebar and opens the translation file at the key's location.
+     */
     registerInspectTranslationCommand() {
         const inspectCommand = vscode.commands.registerCommand('elementaryWatson.inspectTranslation', async () => {
             const activeEditor = vscode.window.activeTextEditor;
@@ -351,6 +390,11 @@ class ExtensionActivator {
         this.disposables.push(codeLensDisposable);
     }
 
+    /**
+     * Register the "rename translation key" command. Gathers the old key from the cursor position,
+     * prompts for the new name, builds rename changes across source and locale files, applies them,
+     * and restores the cursor position relative to the replaced key name.
+     */
     registerRenameKeyCommand() {
         const cmd = vscode.commands.registerCommand('elementaryWatson.renameKey', async () => {
             const editor = vscode.window.activeTextEditor;
@@ -396,6 +440,11 @@ class ExtensionActivator {
                             progress.report({ message: 'Applying changes...' });
                             await applyTextFileChanges(changes);
 
+                            // After text edits shift positions, put the cursor back where the user
+                            // was inside the new key name so they can continue typing if needed.
+
+                            // This is not 100% reliable, I'm assuming due to more edits possibly shifting the code around, 
+                            // but it's better than nothing
                             restoreRenameCursor(cursorState, changes, newKey);
 
                             progress.report({ message: 'Refreshing labels...' });
@@ -413,6 +462,10 @@ class ExtensionActivator {
         this.disposables.push(cmd);
     }
 
+    /**
+     * Register two delete commands: one picks up the key under the cursor, the other shows a
+     * quick-pick list of every known key. Both build a plan, confirm with the user, then apply.
+     */
     registerDeleteKeyCommands() {
         const deleteAtCursor = vscode.commands.registerCommand('elementaryWatson.deleteKey', async () => {
             const editor = vscode.window.activeTextEditor;
@@ -465,6 +518,10 @@ class ExtensionActivator {
         this.disposables.push(deleteAtCursor, deleteByName);
     }
 
+    /**
+     * Resolve the workspace root for a document, falling back to the first workspace folder
+     * when no document is available (e.g. for palette commands that don't need an open file).
+     */
     getProjectRootForCommand(document) {
         if (document) {
             return getProjectRoot(document);
@@ -473,6 +530,10 @@ class ExtensionActivator {
         return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || null;
     }
 
+    /**
+     * Build a delete plan (locale entries + source usages), ask the user to confirm, then apply.
+     * Opens a search results tab so the user can review what will be inlined before confirming.
+     */
     async deleteTranslationKey(projectRoot, key) {
         let plan;
         try {
@@ -529,15 +590,19 @@ class ExtensionActivator {
                 console.log(`\n📄 Active editor changed: ${path.basename(editor.document.uri.fsPath)}`);
                 if (this.editorService.isSupportedDocument(editor.document)) {
                     await this.editorService.processDocument(editor.document);
+
+                    // Refresh sidebar for the new active document (don't force if it's a translation file)
                     await this.sidebarTreeProvider.refresh(editor.document);
                 } else {
                     await this.sidebarTreeProvider.refresh(editor.document);
                 }
             } else {
+                // Clear sidebar if no supported document is active and it's not a translation file
                 await this.sidebarTreeProvider.refresh(null);
             }
         });
 
+        // Update context key so that menu items (rename, delete) only show when cursor is on `m.key()`.
         const selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection((event) => {
             const onCall = this.editorService.getCodeLensProvider().isPositionOnI18nCall(
                 event.textEditor.document,
@@ -638,7 +703,25 @@ class ExtensionActivator {
         );
     }
 
+    /**
+     * Watch translation files (*.json) for external changes. When a translation file is created,
+     * modified, or deleted, re-process the active editor so decorations and CodeLens stay current.
+     *
+     * Concurrent calls are serialized via _setupWatchersPromise: if a setup is already in
+     * progress, subsequent calls wait for it to finish before starting their own.
+     */
     async setupTranslationFileWatchers() {
+        if (this._setupWatchersPromise) {
+            await this._setupWatchersPromise.catch(() => {});
+            this._setupWatchersPromise = null;
+        }
+
+        const promise = this._setupTranslationFileWatchersImpl();
+        this._setupWatchersPromise = promise;
+        await promise;
+    }
+
+    async _setupTranslationFileWatchersImpl() {
         this.disposeTranslationFileWatchers();
 
         const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -647,8 +730,8 @@ class ExtensionActivator {
         for (const folder of workspaceFolders) {
             const workspacePath = folder.uri.fsPath;
             const pathPattern = await this.localeService.getTranslationPathPatternAsync(workspacePath);
-            // Replace {locale} with a glob wildcard to match all locale files
-            const globPattern = pathPattern.replace('{locale}', '*').replace(/^\.\//, '');
+            const globPattern = this._buildSafeGlobPattern(pathPattern);
+
             const watcher = vscode.workspace.createFileSystemWatcher(
                 new vscode.RelativePattern(folder, globPattern)
             );
@@ -670,6 +753,7 @@ class ExtensionActivator {
             watcher.onDidCreate(handleChange);
             watcher.onDidDelete(handleChange);
             this.translationFileWatchers.push(watcher);
+            this.disposables.push(watcher);
         }
     }
 
@@ -678,6 +762,33 @@ class ExtensionActivator {
             watcher.dispose();
         }
         this.translationFileWatchers = [];
+    }
+
+    /**
+     * Convert a locale file path pattern (containing `{locale}`) into a glob pattern
+     * safe for use with `createFileSystemWatcher`.
+     *
+     * The inlang path pattern may be as shallow as `{locale}.json`, which resolves to the
+     * root-level glob `*.json`.  A root-level glob causes `RelativePattern` to place a
+     * recursive inotify watch on the entire workspace folder, which can exhaust the OS
+     * watch limit on large trees.  Patterns that lack a directory separator are therefore
+     * scoped under `messages/` as a defensive fallback, and a warning is logged so the
+     * user can adjust their inlang settings.
+     *
+     * @param {string} pathPattern – e.g. `./messages/{locale}.json` or `{locale}.json`
+     * @returns {string} A glob pattern suitable for `new RelativePattern(folder, …)`.
+     */
+    _buildSafeGlobPattern(pathPattern) {
+        let glob = pathPattern.replace('{locale}', '*').replace(/^\.\//, '');
+        if (!glob.includes('/')) {
+            console.warn(
+                `Translation path pattern "${pathPattern}" resolves to root-level glob "${glob}". ` +
+                `Scoping under "messages/" to avoid a recursive workspace-root watch. ` +
+                `Set a more specific pathPattern in project.inlang/settings.json to silence this.`
+            );
+            glob = `messages/${glob}`;
+        }
+        return glob;
     }
 
     /**
@@ -754,6 +865,13 @@ class ExtensionActivator {
 }
 
 /**
+ * @typedef {Object} TransactionError
+ * @property {'forward' | 'rollback'} phase
+ * @property {boolean} [rollbackSucceeded]
+ * @property {string} message
+ */
+
+/**
  * @param {unknown} error
  * @returns {string}
  */
@@ -762,20 +880,42 @@ function formatTransactionError(error) {
         return String(error);
     }
 
-    if (error.phase === 'forward' && error.rollbackSucceeded) {
-        return `${error.message}`;
+    const txError = /** @type {TransactionError & Error} */ (error);
+
+    if (txError.phase === 'forward' && txError.rollbackSucceeded) {
+        return `${txError.message}`;
     }
 
-    if (error.phase === 'rollback') {
-        return `${error.message} Review the reported file manually before retrying.`;
+    if (txError.phase === 'rollback') {
+        return `${txError.message} Review the reported file manually before retrying.`;
     }
 
     return error.message;
 }
 
 /**
- * @param {{ editor: vscode.TextEditor, documentUri: string, keyStart: number, keyEnd: number, cursorOffset: number }} cursorState
- * @param {Array<{ uri: vscode.Uri, edits?: Array<{ start: number, end: number, replacement: string }> }>} changes
+ * @typedef {Object} CursorState
+ * @property {vscode.TextEditor} editor
+ * @property {string} documentUri
+ * @property {number} keyStart
+ * @property {number} keyEnd
+ * @property {number} cursorOffset
+ *
+ * @typedef {Object} TextEdit
+ * @property {number} start
+ * @property {number} end
+ * @property {string} replacement
+ *
+ * @typedef {Object} FileChange
+ * @property {vscode.Uri} uri
+ * @property {TextEdit[]} [edits]
+ */
+
+/**
+ * After rename edits shift text positions, restore the cursor to the same visual offset within
+ * the newly-inserted key name. Only applies if the user's cursor was on the renamed key.
+ * @param {CursorState} cursorState
+ * @param {FileChange[]} changes
  * @param {string} newKey
  */
 function restoreRenameCursor(cursorState, changes, newKey) {
