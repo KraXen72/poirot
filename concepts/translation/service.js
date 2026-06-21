@@ -3,7 +3,8 @@ const { LocaleService } = require('../locale/service');
 const { getNestedValue } = require('../utils/json-utils');
 
 /**
- * Service for processing translation calls and coordinating translation loading
+ * Orchestrates translation resolution: uses LocaleService to locate the file, TranslationRepository to load it,
+ * then resolves `m.key()` calls, handles nested keys, and searches fallback locales for missing keys.
  */
 class TranslationService {
     constructor(translationRepository = new TranslationRepository(), localeService = new LocaleService()) {

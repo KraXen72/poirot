@@ -3,7 +3,8 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 
 /**
- * Service for managing locale configuration and inlang project settings
+ * Resolves where translation files live and which locale is active: reads inlang settings, figures out
+ * the translation file path pattern, discovers available locales, and persists locale preference.
  */
 class LocaleService {
     /**

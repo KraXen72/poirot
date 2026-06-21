@@ -9,7 +9,8 @@ const { generateHumanKey } = require('../utils/human-key');
 const { stageOrWriteDocumentRange } = require('../utils/text-edits');
 
 /**
- * Service for extracting strings and adding them to locale files
+ * Handles the "extract string" workflow: replaces a hardcoded string in source with an `m.key()` call,
+ * writes the value to all locale files, and generates a unique human-readable key when needed.
  */
 class ExtractionService {
     constructor(localeService = new LocaleService(), translationService = new TranslationService()) {

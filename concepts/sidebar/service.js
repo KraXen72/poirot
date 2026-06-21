@@ -4,7 +4,9 @@ const path = require('path');
 const { findKeyLine } = require('../utils/json-utils');
 
 /**
- * Service for managing sidebar translation data
+ * Assembles translation data for the sidebar tree view: resolves all keys from the active document
+ * and their values across every available locale. Also handles opening a translation file and
+ * navigating to a specific key.
  */
 class SidebarService {
     constructor(translationService, localeService) {
